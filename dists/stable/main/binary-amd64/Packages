@@ -4,10 +4,10 @@ Architecture: amd64
 Maintainer: nekoHub contributors
 Depends: openssh-client
 Filename: pool/main/n/nekohub/nekohub_0.1.0_amd64.deb
-Size: 680776
-MD5sum: a3c4ccdaacdff971f9a23ebb9b6fd166
-SHA1: 0c8aa6c5aa7a51aa6b368229d719ad7084a97971
-SHA256: adfe23be21c1758513b1f0e37c1378b88a5c9f148a79ab00e14800825fd5a623
+Size: 734642
+MD5sum: 18d0ce0b34075703904b8dc546097634
+SHA1: 685b96937073c7dbf1b98c998d01833e94980099
+SHA256: c3b6fae65c3f279ccc5c88c35675f904e022ae1e5ee2d49282cd03042c319a2c
 Section: admin
 Priority: optional
 Homepage: https://github.com/awakyy1/nekohub
