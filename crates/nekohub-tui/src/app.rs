@@ -43,6 +43,7 @@ pub struct App {
     pub remote_selected: usize,
     pub animation_tick: u64,
     pub welcome_notice: Option<String>,
+    pub remote_notice: Option<String>,
     by_id: HashMap<String, usize>,
 }
 
@@ -57,6 +58,7 @@ impl App {
             remote_selected: 0,
             animation_tick: 0,
             welcome_notice: None,
+            remote_notice: None,
             by_id: HashMap::new(),
         }
     }
@@ -77,6 +79,7 @@ impl App {
             remote_selected: 0,
             animation_tick: 0,
             welcome_notice: None,
+            remote_notice: None,
             by_id,
         }
     }
@@ -148,6 +151,7 @@ impl App {
 
     pub fn open_remote_picker(&mut self) {
         self.view = View::RemotePicker;
+        self.remote_notice = None;
     }
 
     pub fn toggle_welcome_choice(&mut self) {
@@ -170,8 +174,10 @@ impl App {
         }
     }
 
-    pub fn selected_remote(&self) -> Option<HostTarget> {
-        self.remote_hosts.get(self.remote_selected).cloned()
+    pub fn explain_remote_pairing(&mut self) {
+        self.remote_notice = Some(
+            "Remote monitoring will use the nekoHub agent. Secure pairing arrives in the next version; SSH metric collection is intentionally disabled.".into(),
+        );
     }
 
     pub fn online_count(&self) -> usize {

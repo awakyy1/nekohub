@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+if ! getent group nekohub-agent >/dev/null; then
+    addgroup --system --quiet nekohub-agent
+fi
+if ! getent passwd nekohub-agent >/dev/null; then
+    adduser --system --quiet --ingroup nekohub-agent --no-create-home \
+        --home /nonexistent --shell /usr/sbin/nologin nekohub-agent
+fi
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    systemctl enable --now nekohub-agent.service
+fi

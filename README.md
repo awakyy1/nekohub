@@ -2,9 +2,9 @@
 
 Linux fleet management, designed for the terminal.
 
-`nekoHub` is an agentless terminal application for people who operate several
-Linux machines. It starts from the SSH setup they already trust and turns raw
-host data into a fast fleet overview and useful drill-downs.
+`nekoHub` is a terminal application for people who operate several Linux
+machines. Its small native agent reads Linux metrics locally and turns them
+into a fast fleet overview, useful drill-downs, and Prometheus data for Grafana.
 
 ## What exists today
 
@@ -12,34 +12,34 @@ This repository is the architectural seed and first executable vertical slice:
 
 - discovers concrete host aliases from `~/.ssh/config`, including local
   `Include` directives;
-- uses the system OpenSSH client, so aliases, keys, agent, `ProxyJump`,
-  `known_hosts`, and other established SSH policy remain authoritative;
-- runs one read-only shell probe over SSH and parses `/proc`, `/sys`, and `df`;
-- collects hosts concurrently, but never overlaps two collections for the same
-  host;
+- includes a read-only Rust agent that parses `/proc` and `/sys` without shell
+  commands;
+- keeps a short in-memory history and serves the TUI through a local Unix
+  socket;
+- exports Prometheus metrics on `127.0.0.1:9876` for Grafana integration;
+- keeps OpenSSH inventory for future pairing and administration, but does not
+  use SSH for continuous metric collection;
 - renders a responsive Ratatui fleet overview and host detail;
 - includes a deterministic demo mode and parser/state tests.
 - starts with an animated choice between monitoring the current machine and an
   OpenSSH host;
-- collects the current Linux machine directly without requiring SSH;
+- collects the current Linux machine through `nekohub-agent` without SSH;
 - presents concrete aliases from `~/.ssh/config` in the remote picker.
 
 ## Run
 
-Requires a current stable Rust toolchain and an `ssh` executable.
+Requires Linux and a current stable Rust toolchain when running from source.
 
 ```bash
-cargo run -p nekohub-tui --bin nekohub
+cargo run -p nekohub-agent --bin nekohub-agent -- --socket /tmp/nekohub.sock
+cargo run -p nekohub-tui --bin nekohub -- --agent-socket /tmp/nekohub.sock
 cargo run -p nekohub-tui --bin nekohub -- --demo
-cargo run -p nekohub-tui --bin nekohub -- --host my-vps --host home-server
-cargo run -p nekohub-tui --bin nekohub -- --once --local
-cargo run -p nekohub-tui --bin nekohub -- --once --host my-vps
+cargo run -p nekohub-tui --bin nekohub -- --once --local --agent-socket /tmp/nekohub.sock
 ```
 
-On launch, choose **Monitor this machine** for direct, read-only Linux metrics,
-or **Connect to a remote machine** to select an alias discovered in
-`~/.ssh/config`. Use `--ssh-config PATH` to select a different file and repeat
-`--host ALIAS` to provide an explicit remote list.
+On launch, choose **Monitor this machine** for local, read-only Linux metrics.
+The remote picker already discovers aliases in `~/.ssh/config`; secure remote
+agent pairing is the next milestone, and SSH metric collection is disabled.
 
 Keys: `j`/`k` or arrows move, `Enter` selects, `Esc` goes back, `r` refreshes,
 and `q` quits.
@@ -59,14 +59,33 @@ sudo apt install nekohub
 sudo apt upgrade
 ```
 
-Alternatively, install a downloaded build directly:
+The `nekohub` package installs the `nekohub-agent` service automatically. Check
+it with `systemctl status nekohub-agent`.
+
+Alternatively, install downloaded builds directly:
 
 ```bash
-sudo apt install ./nekohub_0.1.0_amd64.deb
+sudo apt install ./nekohub-agent_0.2.0_amd64.deb ./nekohub_0.2.0_amd64.deb
 nekohub
 ```
 
-The leading `./` matters when installing a local package.
+The leading `./` matters when installing local packages.
+
+## Prometheus and Grafana
+
+The agent exposes Prometheus text metrics locally at
+`http://127.0.0.1:9876/metrics`. Add it to Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: nekohub
+    static_configs:
+      - targets: ["127.0.0.1:9876"]
+```
+
+Grafana then uses Prometheus as its data source. Binding the endpoint to a
+non-loopback address is configurable, but V1 has no TLS or authentication; do
+not expose it directly to the public internet.
 
 ## Product boundary
 
@@ -82,9 +101,10 @@ See [MVP](docs/MVP.md), [architecture](docs/ARCHITECTURE.md), and the
 
 ## Safety
 
-The collector is read-only. It does not install an agent, use `sudo`, mutate a
-host, or auto-update executable code. Host-key verification and authentication
-are delegated to OpenSSH.
+The agent is read-only and runs as a dedicated unprivileged system user. It
+does not execute shell commands, mutate the host, or auto-update executable
+code. Host-key verification and SSH authentication remain delegated to
+OpenSSH for the operations that use it.
 
 ## License
 

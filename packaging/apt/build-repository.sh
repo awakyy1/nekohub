@@ -1,17 +1,20 @@
 #!/bin/sh
 set -eu
 
-repository="${1:?usage: build-repository.sh REPOSITORY_DIR DEB_FILE}"
-package="${2:?usage: build-repository.sh REPOSITORY_DIR DEB_FILE}"
+repository="${1:?usage: build-repository.sh REPOSITORY_DIR DEB_FILE...}"
+shift
+test "$#" -gt 0
 source_dir="${NEKOHUB_SOURCE_DIR:-$(pwd)}"
 repository="$(cd "$repository" && pwd)"
-package="$(cd "$(dirname "$package")" && pwd)/$(basename "$package")"
 pool="$repository/pool/main/n/nekohub"
 distribution="$repository/dists/stable"
 packages="$distribution/main/binary-amd64/Packages"
 
 mkdir -p "$pool" "$(dirname "$packages")"
-cp "$package" "$pool/"
+for package in "$@"; do
+  package="$(cd "$(dirname "$package")" && pwd)/$(basename "$package")"
+  cp "$package" "$pool/"
+done
 
 cd "$repository"
 dpkg-scanpackages --multiversion pool /dev/null > "$packages"

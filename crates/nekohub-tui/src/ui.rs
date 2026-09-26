@@ -170,7 +170,7 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(AMBER).bold(),
         ))
         .title_bottom(
-            Line::from(" ↑↓ select  ·  Enter connect  ·  Esc back  ·  q quit ").centered(),
+            Line::from(" ↑↓ select  ·  Enter agent setup  ·  Esc back  ·  q quit ").centered(),
         )
         .borders(Borders::ALL)
         .border_style(Style::default().fg(AMBER));
@@ -184,6 +184,30 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         width,
         height,
     );
+    if let Some(notice) = &app.remote_notice {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled("AGENT PAIRING", Style::default().fg(AMBER).bold()),
+                Line::from(""),
+                Line::from(notice.as_str()),
+                Line::from(""),
+                Line::styled(
+                    "SSH remains available for discovery and administration.",
+                    Style::default().fg(DIM),
+                ),
+            ])
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .title(" Remote monitoring ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(AMBER)),
+            ),
+            panel,
+        );
+        return;
+    }
     let rows = app.remote_hosts.iter().enumerate().map(|(index, host)| {
         let selected = index == app.remote_selected;
         Row::new([if selected { "›" } else { " " }, host.alias.as_str()]).style(if selected {
@@ -194,13 +218,13 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     });
     let table = Table::new(rows, [Constraint::Length(2), Constraint::Min(10)])
         .header(
-            Row::new(["", "SSH HOST"])
+            Row::new(["", "DISCOVERED HOST"])
                 .style(Style::default().fg(DIM).bold())
                 .bottom_margin(1),
         )
         .block(
             Block::default()
-                .title(" Hosts from ~/.ssh/config ")
+                .title(" Inventory from ~/.ssh/config ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(DIM)),
         );

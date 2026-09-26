@@ -9,8 +9,8 @@ use app::{App, View};
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
+use nekohub_agent::AgentCollector;
 use nekohub_core::{Collector, HostSnapshot, HostTarget, Inventory, RateTracker};
-use nekohub_ssh::{LocalCollector, OpenSshCollector};
 use tokio::sync::{broadcast, mpsc, watch};
 
 #[derive(Debug, Parser)]
@@ -40,6 +40,10 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     ssh_config: Option<PathBuf>,
 
+    /// Local nekoHub agent socket.
+    #[arg(long, default_value = "/run/nekohub/agent.sock")]
+    agent_socket: PathBuf,
+
     /// Seconds between completed collection attempts.
     #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
     refresh: u64,
@@ -63,14 +67,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.once {
         let (targets, collector): (Vec<_>, Arc<dyn Collector>) = if args.local {
-            (vec![local_target()], Arc::new(LocalCollector::new(timeout)))
+            (
+                vec![local_target()],
+                Arc::new(AgentCollector::new(args.agent_socket.clone(), timeout)),
+            )
         } else if args.demo {
             (demo::targets(), Arc::new(demo::DemoCollector::default()))
         } else {
-            (
-                remote_hosts,
-                Arc::new(OpenSshCollector::new(timeout).with_config_path(&ssh_config)),
-            )
+            return Err(
+                "remote agent pairing is not available yet; use --local or --demo with --once"
+                    .into(),
+            );
         };
         if targets.is_empty() {
             return Err("--once needs --local, --demo, or at least one SSH host".into());
@@ -84,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     run_tui(
         remote_hosts,
-        ssh_config,
+        args.agent_socket,
         timeout,
         Duration::from_secs(args.refresh),
     )
@@ -132,7 +139,7 @@ async fn run_once(
             let mut tracker = RateTracker::default();
             let first = collector.collect(&target).await?;
             tracker.apply(first);
-            tokio::time::sleep(Duration::from_millis(350)).await;
+            tokio::time::sleep(Duration::from_millis(1_100)).await;
             let second = collector.collect(&target).await?;
             Ok::<_, nekohub_core::CollectError>((target, tracker.apply(second)))
         });
@@ -170,27 +177,18 @@ async fn run_demo(refresh_every: Duration) -> Result<(), Box<dyn std::error::Err
     let targets = demo::targets();
     let collector: Arc<dyn Collector> = Arc::new(demo::DemoCollector::default());
     let mut app = App::monitoring(targets.clone());
-    run_event_loop(
-        &mut app,
-        Some((targets, collector)),
-        None,
-        None,
-        refresh_every,
-    )
-    .await
+    run_event_loop(&mut app, Some((targets, collector)), None, refresh_every).await
 }
 
 async fn run_tui(
     remote_hosts: Vec<HostTarget>,
-    ssh_config: PathBuf,
+    agent_socket: PathBuf,
     timeout: Duration,
     refresh_every: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let local: Arc<dyn Collector> = Arc::new(LocalCollector::new(timeout));
-    let remote: Arc<dyn Collector> =
-        Arc::new(OpenSshCollector::new(timeout).with_config_path(ssh_config));
+    let local: Arc<dyn Collector> = Arc::new(AgentCollector::new(agent_socket, timeout));
     let mut app = App::new(remote_hosts);
-    run_event_loop(&mut app, None, Some(local), Some(remote), refresh_every).await
+    run_event_loop(&mut app, None, Some(local), refresh_every).await
 }
 
 #[allow(clippy::too_many_lines)]
@@ -198,7 +196,6 @@ async fn run_event_loop(
     app: &mut App,
     initial: Option<(Vec<HostTarget>, Arc<dyn Collector>)>,
     local_collector: Option<Arc<dyn Collector>>,
-    remote_collector: Option<Arc<dyn Collector>>,
     refresh_every: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (event_tx, mut event_rx) = mpsc::channel(32);
@@ -274,15 +271,7 @@ async fn run_event_loop(
                             KeyCode::Up | KeyCode::Char('k') => app.previous_remote(),
                             KeyCode::Esc => app.open_welcome(),
                             KeyCode::Enter => {
-                                if let (Some(target), Some(collector)) =
-                                    (app.selected_remote(), remote_collector.as_ref())
-                                {
-                                    app.start_monitoring(target.clone());
-                                    spawn_worker(
-                                        &mut workers, target, Arc::clone(collector), refresh_every,
-                                        &event_tx, &refresh_tx, &shutdown_rx,
-                                    );
-                                }
+                                app.explain_remote_pairing();
                             }
                             _ => {}
                         },

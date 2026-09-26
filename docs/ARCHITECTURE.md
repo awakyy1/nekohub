@@ -4,13 +4,15 @@ The repository follows ports and adapters, but stays a small workspace rather
 than starting with a plugin framework.
 
 ```text
-OpenSSH config -> inventory -> one collector task per host -> latest snapshot
-                                      |                           |
-                                      v                           v
-                                ssh + shell probe          app state/history
-                                                                  |
-                                                                  v
-                                                            Ratatui views
+Linux procfs/sysfs -> nekohub-agent -> Unix socket -> collector task
+                           |                             |
+                           v                             v
+                  in-memory history              app state/history
+                           |                             |
+                           v                             v
+                  Prometheus endpoint              Ratatui views
+
+OpenSSH config -> inventory and future secure agent bootstrap/administration
 ```
 
 ## Crates
@@ -18,44 +20,45 @@ OpenSSH config -> inventory -> one collector task per host -> latest snapshot
 - `nekohub-core`: host identity, raw samples, normalized snapshots, rate
   calculation, inventory discovery, and the collector port. It has no terminal
   or process dependency.
-- `nekohub-ssh`: OpenSSH process adapter and the versioned, read-only Linux probe.
+- `nekohub-agent`: native Linux collection, versioned local protocol, bounded
+  in-memory history, client adapter, and Prometheus endpoint.
+- `nekohub-ssh`: retained OpenSSH adapter for inventory/bootstrap and future
+  explicitly administrative operations; it is not used for metric polling.
 - `nekohub-tui`: scheduling, demo data, interaction, and presentation.
 
 This separation makes parsers and metric semantics testable without a terminal
-or reachable server. It also leaves room for a native SSH adapter or a
-Prometheus history adapter without changing the UI's domain model.
+or reachable server. It leaves room for remote agent transports and durable
+history providers without changing the UI's domain model.
 
 ## Concurrency model
 
-Each host owns one long-lived async task. The task awaits a collection before it
-waits for the next interval, so a slow request cannot create an unbounded queue
-or overlap itself. Hosts still run concurrently. Results travel through a
-bounded channel; the UI owns its state and only applies complete snapshots.
+The agent has one sampling loop, stores only a bounded history, and broadcasts
+new raw samples to streaming clients. Each TUI host owns one long-lived async
+task, while results travel through a bounded channel. The UI owns its state and
+only applies complete snapshots.
 
 Refresh is a broadcast signal, not another spawned collection. Shutdown is a
-watch signal observed by every host task.
+watch signal observed by every TUI worker.
 
 ## Snapshot semantics
 
-The remote probe returns cumulative counters and point-in-time gauges. The
-controller calculates CPU and network rates from two successful samples. This
-keeps the remote command short and avoids sleeping on every host. The first
+The native agent reads cumulative counters and point-in-time gauges. The agent
+and clients calculate CPU and network rates from successive samples. The first
 sample therefore shows unknown rates rather than invented zeroes.
 
 Snapshots are immutable and carry collection time and latency. Errors never
 erase the last good snapshot; the UI can distinguish offline, stale, and
 never-seen hosts as the model evolves.
 
-## SSH boundary
+## Agent and SSH boundaries
 
-The MVP invokes the user's OpenSSH executable with the selected alias. OpenSSH
-remains responsible for authentication, host-key verification, jump hosts,
-socket multiplexing, and config resolution. The application never accepts or
-stores passwords.
+The local TUI protocol uses a Unix socket and contains read-only requests only.
+Prometheus binds to loopback by default. Remote transport will add an explicit
+authenticated pairing protocol before it is enabled.
 
-The probe protocol begins with a version field and uses one `key=value` record
-per line. Unknown keys are ignored, which permits additive evolution. A future
-protocol change that changes meaning must increment the version.
+OpenSSH remains responsible for host-key verification, authentication, jump
+hosts, and config resolution when used for inventory or administration. It is
+not the continuous monitoring transport.
 
 ## Extension rule
 

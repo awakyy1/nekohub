@@ -22,7 +22,7 @@ impl HostTarget {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     pub used: u64,
     pub total: u64,
@@ -35,14 +35,14 @@ impl Usage {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Throughput {
     pub read_per_sec: f64,
     pub write_per_sec: f64,
 }
 
 /// Complete, immutable view produced after normalizing a raw sample.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostSnapshot {
     pub host_id: String,
     pub collected_at: SystemTime,

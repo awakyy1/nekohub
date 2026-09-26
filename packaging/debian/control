@@ -1,11 +1,11 @@
 Package: nekohub
-Version: 0.1.0
+Version: 0.2.0
 Section: admin
 Priority: optional
 Architecture: amd64
 Maintainer: nekoHub contributors
-Depends: openssh-client
+Depends: nekohub-agent (= 0.2.0), openssh-client
 Homepage: https://github.com/awakyy1/nekohub
 Description: Linux fleet management designed for the terminal
- nekoHub is an agentless terminal interface for monitoring the local machine
- or remote Linux hosts through an existing OpenSSH configuration.
+ nekoHub is a terminal interface for monitoring Linux machines through the
+ native nekoHub agent. OpenSSH remains available for inventory and operations.

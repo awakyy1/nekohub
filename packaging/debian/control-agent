@@ -1,0 +1,11 @@
+Package: nekohub-agent
+Version: 0.2.0
+Section: admin
+Priority: optional
+Architecture: amd64
+Maintainer: nekoHub contributors
+Depends: adduser, systemd
+Homepage: https://github.com/awakyy1/nekohub
+Description: Native Linux metrics agent for nekoHub
+ A small read-only daemon that collects host metrics from procfs and sysfs,
+ serves the local nekoHub TUI, and exposes Prometheus-compatible metrics.

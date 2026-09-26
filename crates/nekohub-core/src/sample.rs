@@ -1,9 +1,10 @@
 use std::time::{Duration, SystemTime};
 
 use crate::{HostSnapshot, Throughput, Usage};
+use serde::{Deserialize, Serialize};
 
 /// Cumulative counters and point-in-time gauges returned by the remote probe.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawHostSample {
     pub host_id: String,
     pub collected_at: SystemTime,

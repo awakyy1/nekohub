@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/nekohub-agent",
     "crates/nekohub-core",
     "crates/nekohub-ssh",
     "crates/nekohub-tui",
@@ -7,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.85"
@@ -21,8 +22,9 @@ futures-util = "0.3.31"
 glob = "0.3.4"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.145"
 thiserror = "2.0.21"
-tokio = { version = "1.53.1", features = ["macros", "process", "rt-multi-thread", "signal", "sync", "time", "io-util"] }
+tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

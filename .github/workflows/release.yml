@@ -44,12 +44,15 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features --target x86_64-unknown-linux-musl -- -D warnings
           cargo test --workspace --all-features --target x86_64-unknown-linux-musl
-          cargo build --release --target x86_64-unknown-linux-musl -p nekohub-tui --bin nekohub
+          cargo build --release --target x86_64-unknown-linux-musl \
+            -p nekohub-tui --bin nekohub \
+            -p nekohub-agent --bin nekohub-agent
 
       - name: Build Debian package
         working-directory: source
         env:
           NEKOHUB_BINARY: target/x86_64-unknown-linux-musl/release/nekohub
+          NEKOHUB_AGENT_BINARY: target/x86_64-unknown-linux-musl/release/nekohub-agent
         run: sh packaging/debian/build-deb.sh
 
       - name: Import repository signing key
@@ -61,7 +64,9 @@ jobs:
         env:
           NEKOHUB_SOURCE_DIR: ${{ github.workspace }}/source
         run: |
-          sh source/packaging/apt/build-repository.sh apt-site "source/dist/nekohub_${NEKOHUB_VERSION}_amd64.deb"
+          sh source/packaging/apt/build-repository.sh apt-site \
+            "source/dist/nekohub-agent_${NEKOHUB_VERSION}_amd64.deb" \
+            "source/dist/nekohub_${NEKOHUB_VERSION}_amd64.deb"
           cp source/packaging/apt/install-repository.sh apt-site/install.sh
           touch apt-site/.nojekyll
 
@@ -80,7 +85,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "dist/nekohub_${NEKOHUB_VERSION}_amd64.deb" --clobber
+            gh release upload "$GITHUB_REF_NAME" \
+              "dist/nekohub-agent_${NEKOHUB_VERSION}_amd64.deb" \
+              "dist/nekohub_${NEKOHUB_VERSION}_amd64.deb" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "dist/nekohub_${NEKOHUB_VERSION}_amd64.deb" --generate-notes
+            gh release create "$GITHUB_REF_NAME" \
+              "dist/nekohub-agent_${NEKOHUB_VERSION}_amd64.deb" \
+              "dist/nekohub_${NEKOHUB_VERSION}_amd64.deb" --generate-notes
           fi
