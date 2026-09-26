@@ -1,0 +1,24 @@
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Sat, 26 Sep 2026 20:22:10 +0000
+Description: Official nekoHub APT repository
+Label: nekoHub
+Origin: nekoHub
+Suite: stable
+MD5Sum:
+ 1b5ddf9f4da0b2a556564a386b842e93              183 Release
+ d76164a6cad6227c0c4138cdf7e625c7              622 main/binary-amd64/Packages
+ 08b8f98e5a7505d3387edf3861217cb6              444 main/binary-amd64/Packages.gz
+SHA1:
+ b20d360d6c56a88c8e701e6355c90f5520b1387a              183 Release
+ 364131f772c9e3f31253cfc938371935ab432744              622 main/binary-amd64/Packages
+ 208d6ad94388398b85bc6d86e99d29d9479724fb              444 main/binary-amd64/Packages.gz
+SHA256:
+ 0f05c97b067f136939ba5ea444239ee3b8a5f8ab05f9cbdb813878b01604d5ce              183 Release
+ 78ae8fa26b67b8dbc4f29efc677751c1d999f42c95a68dc3758f795c58d643ba              622 main/binary-amd64/Packages
+ f7728163d126a2653284433b7b39043a7c3c5211c4e1735f41ec456abfe2dde4              444 main/binary-amd64/Packages.gz
+SHA512:
+ 8d250d68ce7c6364d0a1d41d4656c52741d4782617ea006c78cc77c77d907e26ff3c2664d8211a8e56d6c1d5ba33d64561d9e246e643783b8e341df78837ab72              183 Release
+ 95aa440d177fe8caa3a5bb28d6ceb22cefc929077b9876d9ed89bb5c129c15c11356d47d64d356a07848c116e5ae9ecc7ca7c2eeef449c1118e1847bf97010b1              622 main/binary-amd64/Packages
+ 2170409ba1f76707007290190952c94000525ae64b2e86ed088a2cf9b8a77fd739fdac4f264c6c5e9a2e0b3ebd0df22bdc8fea9c12da7260fcb6c32e9c2d2695              444 main/binary-amd64/Packages.gz
