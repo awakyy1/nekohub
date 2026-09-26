@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, Wrap},
+    widgets::{Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap},
 };
 
 use crate::app::{App, HostState, View};
@@ -28,6 +28,15 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     match app.view {
         View::Welcome => {
             render_welcome(frame, frame.area(), app);
+            return;
+        }
+        View::AgentConfirm => {
+            render_welcome(frame, frame.area(), app);
+            render_agent_confirmation(frame, frame.area(), app);
+            return;
+        }
+        View::AgentSetup => {
+            render_agent_setup(frame, frame.area(), app);
             return;
         }
         View::RemotePicker => {
@@ -48,11 +57,209 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     match app.view {
         View::Overview => render_overview(frame, shell[1], app),
         View::Detail => render_detail(frame, shell[1], app.selected()),
-        View::Welcome | View::RemotePicker => {
+        View::Welcome | View::AgentConfirm | View::AgentSetup | View::RemotePicker => {
             unreachable!("setup views return before shell render")
         }
     }
     render_footer(frame, shell[2], app.view);
+}
+
+fn render_agent_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(70);
+    let height = area.height.min(15);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .title(Line::styled(
+            " INSTALL LOCAL AGENT ",
+            Style::default().fg(AMBER).bold(),
+        ))
+        .title_bottom(Line::from(" ←→ select  ·  Enter confirm  ·  Esc cancel ").centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(AMBER));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6),
+            Constraint::Length(3),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("ONE-TIME SETUP", Style::default().fg(DIM).bold()),
+            Line::from(""),
+            Line::styled(
+                "This action will install the nekoHub agent on your computer.",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::styled("Do you want to proceed?", Style::default().fg(AMBER).bold()),
+        ])
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true }),
+        rows[0],
+    );
+    let buttons = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .split(rows[1]);
+    render_welcome_button(frame, buttons[1], "Yes", app.agent_confirm_selected == 0);
+    render_welcome_button(frame, buttons[2], "No", app.agent_confirm_selected == 1);
+    frame.render_widget(
+        Paragraph::new("The agent runs read-only and without root privileges.")
+            .style(Style::default().fg(DIM))
+            .alignment(Alignment::Center),
+        rows[2],
+    );
+}
+
+#[allow(clippy::too_many_lines)]
+fn render_agent_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let pulse = match app.animation_tick % 18 {
+        0..=5 => DIM,
+        6..=11 => AMBER,
+        _ => ORANGE,
+    };
+    let failed = app.setup_error.is_some();
+    let accent = if failed { RED } else { pulse };
+    let spinner = ["◜", "◠", "◝", "◞", "◡", "◟"][(app.animation_tick as usize / 2) % 6];
+    let footer = if failed {
+        " Enter retry  ·  Esc back  ·  q quit "
+    } else {
+        " Setting up a read-only local service  ·  q quit "
+    };
+    let outer = Block::default()
+        .title(Line::from(vec![
+            Span::styled(format!(" {spinner} "), Style::default().fg(accent)),
+            Span::styled("nekoHub", Style::default().fg(AMBER).bold()),
+            Span::styled(" / AGENT SETUP ", Style::default().fg(DIM)),
+        ]))
+        .title_bottom(Line::from(footer).centered())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(accent));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let width = inner.width.min(70);
+    let height = inner.height.min(if failed { 18 } else { 15 });
+    let age = app
+        .animation_tick
+        .saturating_sub(app.setup_started_tick)
+        .min(8) as u16;
+    let slide = 8_u16
+        .saturating_sub(age)
+        .min(inner.height.saturating_sub(height) / 2);
+    let panel = Rect::new(
+        inner.x + inner.width.saturating_sub(width) / 2,
+        inner.y + inner.height.saturating_sub(height) / 2 + slide,
+        width,
+        height,
+    );
+    let block = Block::default()
+        .title(if failed {
+            " Agent needs attention "
+        } else {
+            " Installing nekoHub agent "
+        })
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent));
+    let content = block.inner(panel);
+    frame.render_widget(block, panel);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Min(4),
+        ])
+        .split(content);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                if failed {
+                    "SETUP PAUSED"
+                } else {
+                    "PREPARING THIS MACHINE"
+                },
+                Style::default().fg(accent).bold(),
+            ),
+            Line::from(""),
+            Line::styled(app.setup_message.as_str(), Style::default().fg(Color::Gray)),
+        ])
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true }),
+        rows[0],
+    );
+
+    let gauge_area = Rect::new(
+        rows[1].x + 2,
+        rows[1].y + 1,
+        rows[1].width.saturating_sub(4),
+        1,
+    );
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(
+                Style::default()
+                    .fg(if failed { RED } else { AMBER })
+                    .bg(DIM),
+            )
+            .ratio(f64::from(app.setup_visible_progress) / 100.0)
+            .label(format!("{:>3}%", app.setup_visible_progress)),
+        gauge_area,
+    );
+
+    if let Some(error) = &app.setup_error {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled(error.as_str(), Style::default().fg(RED)),
+                Line::from(""),
+                Line::styled(
+                    "sudo apt install nekohub-agent",
+                    Style::default().fg(AMBER).bold(),
+                ),
+                Line::styled(
+                    "sudo systemctl enable --now nekohub-agent",
+                    Style::default().fg(AMBER).bold(),
+                ),
+            ])
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+            rows[2],
+        );
+    } else {
+        let dots = ".".repeat((app.animation_tick as usize / 3) % 4);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    format!("Verifying native Linux metrics{dots}"),
+                    Style::default().fg(DIM),
+                ),
+                Line::from(""),
+                Line::styled(
+                    "No shell commands · no SSH polling · no root access",
+                    Style::default().fg(DIM),
+                ),
+            ])
+            .alignment(Alignment::Center),
+            rows[2],
+        );
+    }
 }
 
 fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -779,13 +986,20 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
 
         for (width, height) in [(80, 24), (106, 40), (160, 45)] {
-            let app = App::new(
+            let mut app = App::new(
                 (0..8)
                     .map(|index| nekohub_core::HostTarget::from_alias(format!("host-{index}")))
                     .collect(),
             );
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.open_agent_confirmation();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.start_agent_setup();
+            app.update_agent_setup(72, "Validating CPU, memory, disk and network".into());
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.fail_agent_setup("Could not reach the local agent".into());
             terminal.draw(|frame| render(frame, &app)).unwrap();
         }
     }

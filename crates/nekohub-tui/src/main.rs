@@ -1,5 +1,6 @@
 mod app;
 mod demo;
+mod onboarding;
 mod terminal;
 mod ui;
 
@@ -55,7 +56,21 @@ struct Args {
 
 enum CollectionEvent {
     Snapshot(HostSnapshot),
-    Error { host_id: String, message: String },
+    Error {
+        host_id: String,
+        message: String,
+    },
+    SetupProgress {
+        progress: u16,
+        message: String,
+    },
+    SetupComplete {
+        target: HostTarget,
+        snapshot: HostSnapshot,
+    },
+    SetupError {
+        message: String,
+    },
 }
 
 #[tokio::main]
@@ -177,7 +192,14 @@ async fn run_demo(refresh_every: Duration) -> Result<(), Box<dyn std::error::Err
     let targets = demo::targets();
     let collector: Arc<dyn Collector> = Arc::new(demo::DemoCollector::default());
     let mut app = App::monitoring(targets.clone());
-    run_event_loop(&mut app, Some((targets, collector)), None, refresh_every).await
+    run_event_loop(
+        &mut app,
+        Some((targets, collector)),
+        None,
+        refresh_every,
+        onboarding::state_path(),
+    )
+    .await
 }
 
 async fn run_tui(
@@ -187,8 +209,17 @@ async fn run_tui(
     refresh_every: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let local: Arc<dyn Collector> = Arc::new(AgentCollector::new(agent_socket, timeout));
-    let mut app = App::new(remote_hosts);
-    run_event_loop(&mut app, None, Some(local), refresh_every).await
+    let state_path = onboarding::state_path();
+    let (mut app, initial) = if onboarding::is_complete(&state_path) {
+        let target = local_target();
+        (
+            App::monitoring(vec![target.clone()]),
+            Some((vec![target], Arc::clone(&local))),
+        )
+    } else {
+        (App::new(remote_hosts), None)
+    };
+    run_event_loop(&mut app, initial, Some(local), refresh_every, state_path).await
 }
 
 #[allow(clippy::too_many_lines)]
@@ -197,6 +228,7 @@ async fn run_event_loop(
     initial: Option<(Vec<HostTarget>, Arc<dyn Collector>)>,
     local_collector: Option<Arc<dyn Collector>>,
     refresh_every: Duration,
+    onboarding_state_path: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (event_tx, mut event_rx) = mpsc::channel(32);
     let (refresh_tx, _) = broadcast::channel(1);
@@ -225,7 +257,7 @@ async fn run_event_loop(
     let result = loop {
         tokio::select! {
             _ = redraw.tick() => {
-                app.animation_tick = app.animation_tick.wrapping_add(1);
+                app.advance_animation();
                 if let Err(error) = terminal.terminal_mut().draw(|frame| ui::render(frame, app)) {
                     break Err(error.into());
                 }
@@ -233,6 +265,20 @@ async fn run_event_loop(
             Some(event) = event_rx.recv() => match event {
                 CollectionEvent::Snapshot(snapshot) => app.apply_snapshot(snapshot),
                 CollectionEvent::Error { host_id, message } => app.apply_error(&host_id, message),
+                CollectionEvent::SetupProgress { progress, message } => {
+                    app.update_agent_setup(progress, message);
+                }
+                CollectionEvent::SetupComplete { target, snapshot } => {
+                    app.start_monitoring(target.clone());
+                    app.apply_snapshot(snapshot);
+                    if let Some(collector) = local_collector.as_ref() {
+                        spawn_worker(
+                            &mut workers, target, Arc::clone(collector), refresh_every,
+                            &event_tx, &refresh_tx, &shutdown_rx,
+                        );
+                    }
+                }
+                CollectionEvent::SetupError { message } => app.fail_agent_setup(message),
             },
             Some(input) = input.next() => match input? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -246,14 +292,7 @@ async fn run_event_loop(
                             KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab
                             | KeyCode::Char('j' | 'k') => app.toggle_welcome_choice(),
                             KeyCode::Enter if app.welcome_selected == 0 => {
-                                if let Some(collector) = local_collector.as_ref() {
-                                    let target = local_target();
-                                    app.start_monitoring(target.clone());
-                                    spawn_worker(
-                                        &mut workers, target, Arc::clone(collector), refresh_every,
-                                        &event_tx, &refresh_tx, &shutdown_rx,
-                                    );
-                                }
+                                app.open_agent_confirmation();
                             }
                             KeyCode::Enter => {
                                 if app.remote_hosts.is_empty() {
@@ -264,6 +303,34 @@ async fn run_event_loop(
                                     app.open_remote_picker();
                                 }
                             }
+                            _ => {}
+                        },
+                        View::AgentConfirm => match key.code {
+                            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+                            | KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('h' | 'j' | 'k' | 'l') => {
+                                app.toggle_agent_confirmation();
+                            }
+                            KeyCode::Enter if app.agent_confirm_selected == 0 => {
+                                if let Some(collector) = local_collector.as_ref() {
+                                    begin_agent_setup(
+                                        app, &mut workers, Arc::clone(collector), &event_tx,
+                                        onboarding_state_path.clone(),
+                                    );
+                                }
+                            }
+                            KeyCode::Enter | KeyCode::Esc => app.open_welcome(),
+                            _ => {}
+                        },
+                        View::AgentSetup => match key.code {
+                            KeyCode::Enter if app.setup_error.is_some() => {
+                                if let Some(collector) = local_collector.as_ref() {
+                                    begin_agent_setup(
+                                        app, &mut workers, Arc::clone(collector), &event_tx,
+                                        onboarding_state_path.clone(),
+                                    );
+                                }
+                            }
+                            KeyCode::Esc if app.setup_error.is_some() => app.open_welcome(),
                             _ => {}
                         },
                         View::RemotePicker => match key.code {
@@ -299,6 +366,92 @@ async fn run_event_loop(
     let _ = shutdown_tx.send(true);
     while workers.join_next().await.is_some() {}
     result
+}
+
+fn begin_agent_setup(
+    app: &mut App,
+    workers: &mut tokio::task::JoinSet<()>,
+    collector: Arc<dyn Collector>,
+    event_tx: &mpsc::Sender<CollectionEvent>,
+    state_path: PathBuf,
+) {
+    app.start_agent_setup();
+    workers.spawn(agent_setup(
+        local_target(),
+        collector,
+        event_tx.clone(),
+        state_path,
+    ));
+}
+
+async fn agent_setup(
+    target: HostTarget,
+    collector: Arc<dyn Collector>,
+    event_tx: mpsc::Sender<CollectionEvent>,
+    state_path: PathBuf,
+) {
+    let result = perform_agent_setup(&target, collector, &event_tx, &state_path).await;
+    let event = match result {
+        Ok(snapshot) => CollectionEvent::SetupComplete { target, snapshot },
+        Err(message) => CollectionEvent::SetupError { message },
+    };
+    let _ = event_tx.send(event).await;
+}
+
+async fn perform_agent_setup(
+    target: &HostTarget,
+    collector: Arc<dyn Collector>,
+    event_tx: &mpsc::Sender<CollectionEvent>,
+    state_path: &std::path::Path,
+) -> Result<HostSnapshot, String> {
+    send_setup_progress(event_tx, 14, "Locating the nekoHub agent package").await;
+    tokio::time::sleep(Duration::from_millis(240)).await;
+
+    send_setup_progress(event_tx, 32, "Connecting to the local agent service").await;
+    let first = collector
+        .collect(target)
+        .await
+        .map_err(|error| format!("Could not reach the local agent: {error}"))?;
+    let mut tracker = RateTracker::default();
+    tracker.apply(first);
+
+    send_setup_progress(event_tx, 58, "Agent installed · service is running").await;
+    tokio::time::sleep(Duration::from_millis(320)).await;
+    send_setup_progress(event_tx, 72, "Validating CPU, memory, disk and network").await;
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let second = collector
+        .collect(target)
+        .await
+        .map_err(|error| format!("The agent stopped responding during validation: {error}"))?;
+    let snapshot = tracker.apply(second);
+    if snapshot.hostname.is_empty()
+        || snapshot.memory.total == 0
+        || snapshot.root_disk.total == 0
+        || snapshot.cpu_percent.is_none()
+    {
+        return Err("The agent returned an incomplete Linux metrics sample".into());
+    }
+
+    send_setup_progress(event_tx, 90, "Saving first-run setup").await;
+    onboarding::mark_complete(state_path)
+        .await
+        .map_err(|error| format!("Could not save setup state: {error}"))?;
+    send_setup_progress(event_tx, 100, "Agent ready · opening your dashboard").await;
+    tokio::time::sleep(Duration::from_millis(650)).await;
+    Ok(snapshot)
+}
+
+async fn send_setup_progress(
+    event_tx: &mpsc::Sender<CollectionEvent>,
+    progress: u16,
+    message: &str,
+) {
+    let _ = event_tx
+        .send(CollectionEvent::SetupProgress {
+            progress,
+            message: message.into(),
+        })
+        .await;
 }
 
 #[allow(clippy::too_many_arguments)]

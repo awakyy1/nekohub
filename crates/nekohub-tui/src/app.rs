@@ -5,6 +5,8 @@ use nekohub_core::{HostSnapshot, HostTarget};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Welcome,
+    AgentConfirm,
+    AgentSetup,
     RemotePicker,
     Overview,
     Detail,
@@ -39,11 +41,17 @@ pub struct App {
     pub selected: usize,
     pub view: View,
     pub welcome_selected: usize,
+    pub agent_confirm_selected: usize,
     pub remote_hosts: Vec<HostTarget>,
     pub remote_selected: usize,
     pub animation_tick: u64,
     pub welcome_notice: Option<String>,
     pub remote_notice: Option<String>,
+    pub setup_target_progress: u16,
+    pub setup_visible_progress: u16,
+    pub setup_message: String,
+    pub setup_error: Option<String>,
+    pub setup_started_tick: u64,
     by_id: HashMap<String, usize>,
 }
 
@@ -54,11 +62,17 @@ impl App {
             selected: 0,
             view: View::Welcome,
             welcome_selected: 0,
+            agent_confirm_selected: 1,
             remote_hosts,
             remote_selected: 0,
             animation_tick: 0,
             welcome_notice: None,
             remote_notice: None,
+            setup_target_progress: 0,
+            setup_visible_progress: 0,
+            setup_message: String::new(),
+            setup_error: None,
+            setup_started_tick: 0,
             by_id: HashMap::new(),
         }
     }
@@ -75,11 +89,17 @@ impl App {
             selected: 0,
             view: View::Overview,
             welcome_selected: 0,
+            agent_confirm_selected: 1,
             remote_hosts: Vec::new(),
             remote_selected: 0,
             animation_tick: 0,
             welcome_notice: None,
             remote_notice: None,
+            setup_target_progress: 0,
+            setup_visible_progress: 0,
+            setup_message: String::new(),
+            setup_error: None,
+            setup_started_tick: 0,
             by_id,
         }
     }
@@ -149,9 +169,50 @@ impl App {
         self.view = View::Welcome;
     }
 
+    pub fn open_agent_confirmation(&mut self) {
+        self.agent_confirm_selected = 1;
+        self.view = View::AgentConfirm;
+    }
+
+    pub fn toggle_agent_confirmation(&mut self) {
+        self.agent_confirm_selected = 1 - self.agent_confirm_selected;
+    }
+
     pub fn open_remote_picker(&mut self) {
         self.view = View::RemotePicker;
         self.remote_notice = None;
+    }
+
+    pub fn start_agent_setup(&mut self) {
+        self.view = View::AgentSetup;
+        self.setup_target_progress = 8;
+        self.setup_visible_progress = 0;
+        self.setup_message = "Preparing local agent setup".into();
+        self.setup_error = None;
+        self.setup_started_tick = self.animation_tick;
+    }
+
+    pub fn update_agent_setup(&mut self, progress: u16, message: String) {
+        self.setup_target_progress = progress.min(100);
+        self.setup_message = message;
+        self.setup_error = None;
+    }
+
+    pub fn fail_agent_setup(&mut self, message: String) {
+        self.setup_error = Some(message);
+    }
+
+    pub fn advance_animation(&mut self) {
+        self.animation_tick = self.animation_tick.wrapping_add(1);
+        if self.view == View::AgentSetup && self.setup_visible_progress < self.setup_target_progress
+        {
+            let remaining = self.setup_target_progress - self.setup_visible_progress;
+            let step = remaining.div_ceil(5).max(1);
+            self.setup_visible_progress = self
+                .setup_visible_progress
+                .saturating_add(step)
+                .min(self.setup_target_progress);
+        }
     }
 
     pub fn toggle_welcome_choice(&mut self) {
@@ -199,5 +260,24 @@ mod tests {
         assert_eq!(app.selected, 1);
         app.next();
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn setup_progress_animates_toward_target() {
+        let mut app = App::new(Vec::new());
+        app.start_agent_setup();
+        app.update_agent_setup(70, "Validating metrics".into());
+        app.advance_animation();
+        assert!(app.setup_visible_progress > 0);
+        assert!(app.setup_visible_progress < 70);
+    }
+
+    #[test]
+    fn agent_confirmation_defaults_to_no() {
+        let mut app = App::new(Vec::new());
+        app.open_agent_confirmation();
+        assert_eq!(app.agent_confirm_selected, 1);
+        app.toggle_agent_confirmation();
+        assert_eq!(app.agent_confirm_selected, 0);
     }
 }

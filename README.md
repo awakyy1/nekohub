@@ -37,7 +37,12 @@ cargo run -p nekohub-tui --bin nekohub -- --demo
 cargo run -p nekohub-tui --bin nekohub -- --once --local --agent-socket /tmp/nekohub.sock
 ```
 
-On launch, choose **Monitor this machine** for local, read-only Linux metrics.
+On first launch, choose **Monitor this machine** and confirm the one-time agent
+setup. nekoHub displays an animated progress screen, validates real Linux
+metrics, and opens the local dashboard. Once setup succeeds, later launches go
+directly to that dashboard. If the service is unavailable, setup pauses with
+recovery commands and does not mark onboarding as complete.
+
 The remote picker already discovers aliases in `~/.ssh/config`; secure remote
 agent pairing is the next milestone, and SSH metric collection is disabled.
 
@@ -65,7 +70,7 @@ it with `systemctl status nekohub-agent`.
 Alternatively, install downloaded builds directly:
 
 ```bash
-sudo apt install ./nekohub-agent_0.2.0_amd64.deb ./nekohub_0.2.0_amd64.deb
+sudo apt install ./nekohub-agent_0.2.1_amd64.deb ./nekohub_0.2.1_amd64.deb
 nekohub
 ```
 
