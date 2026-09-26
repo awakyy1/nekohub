@@ -1,0 +1,86 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Check out APT repository
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: apt-site
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils dpkg-dev musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          rustup component add clippy
+
+      - name: Read package version
+        working-directory: source
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)
+          test -n "$version"
+          test "${GITHUB_REF_NAME#v}" = "$version"
+          echo "NEKOHUB_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Test and build
+        working-directory: source
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features --target x86_64-unknown-linux-musl -- -D warnings
+          cargo test --workspace --all-features --target x86_64-unknown-linux-musl
+          cargo build --release --target x86_64-unknown-linux-musl -p nekohub-tui --bin nekohub
+
+      - name: Build Debian package
+        working-directory: source
+        env:
+          NEKOHUB_BINARY: target/x86_64-unknown-linux-musl/release/nekohub
+        run: sh packaging/debian/build-deb.sh
+
+      - name: Import repository signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Update signed APT repository
+        env:
+          NEKOHUB_SOURCE_DIR: ${{ github.workspace }}/source
+        run: |
+          sh source/packaging/apt/build-repository.sh apt-site "source/dist/nekohub_${NEKOHUB_VERSION}_amd64.deb"
+          cp source/packaging/apt/install-repository.sh apt-site/install.sh
+          touch apt-site/.nojekyll
+
+      - name: Publish APT repository
+        working-directory: apt-site
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          git commit -m "repo: publish ${GITHUB_REF_NAME}" || exit 0
+          git push
+
+      - name: Publish GitHub release
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "dist/nekohub_${NEKOHUB_VERSION}_amd64.deb" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "dist/nekohub_${NEKOHUB_VERSION}_amd64.deb" --generate-notes
+          fi

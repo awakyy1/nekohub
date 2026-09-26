@@ -46,17 +46,27 @@ and `q` quits.
 
 ## Debian package
 
-Install a downloaded build with:
+Configure the official nekoHub repository once:
+
+```bash
+curl -fsSL https://awakyy1.github.io/nekohub/install.sh | sudo sh
+```
+
+Then install and update nekoHub through APT:
+
+```bash
+sudo apt install nekohub
+sudo apt upgrade
+```
+
+Alternatively, install a downloaded build directly:
 
 ```bash
 sudo apt install ./nekohub_0.1.0_amd64.deb
 nekohub
 ```
 
-The leading `./` matters: this installs a local package. Supporting
-`sudo apt install nekohub` without a file requires publishing and signing an
-APT repository. The package is intentionally named `nekohub`, so the final
-repository command will remain `sudo apt install nekohub`.
+The leading `./` matters when installing a local package.
 
 ## Product boundary
 
