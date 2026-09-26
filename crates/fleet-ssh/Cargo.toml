@@ -1,0 +1,16 @@
+[package]
+name = "fleet-ssh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+fleet-core = { path = "../fleet-core" }
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
+
