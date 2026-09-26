@@ -3,6 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use async_trait::async_trait;
 use nekohub_core::{CollectError, Collector, HostTarget, RawHostSample};
 
+#[cfg(unix)]
 use crate::protocol::{AgentRequest, AgentResponse, PROTOCOL_VERSION};
 
 #[derive(Debug, Clone)]
