@@ -1,24 +1,24 @@
 Architectures: amd64
 Codename: stable
 Components: main
-Date: Sat, 26 Sep 2026 20:26:14 +0000
+Date: Sat, 26 Sep 2026 21:54:29 +0000
 Description: Official nekoHub APT repository
 Label: nekoHub
 Origin: nekoHub
 Suite: stable
 MD5Sum:
- c1f3ac4e64d21a193dc267011c9ad506              183 Release
- d8ea2df021c6874341c865e1c7962db3              622 main/binary-amd64/Packages
- 20f9a03cd91107779d336e741a33496d              447 main/binary-amd64/Packages.gz
+ ca0abd82ee622c0f46fec6898b4626cd              183 Release
+ d56b0144ea0d3d2345eb193ecf5ab278             1913 main/binary-amd64/Packages
+ 3d980b5963683e7e1f400ef7f5f7bc82              862 main/binary-amd64/Packages.gz
 SHA1:
- a8b9eadce015349aa2f70c267b5167022aefe10e              183 Release
- c413769e9560b22452c77c5af4ea3c51b6dd8c10              622 main/binary-amd64/Packages
- cbbdd23a4869558aaa9376005714fd9302f54f0e              447 main/binary-amd64/Packages.gz
+ 752d2d194f77610a1d2c1b5696dc52e79406c068              183 Release
+ d9e0641a85a1a289d8f44c17f9d3029803fcdd5b             1913 main/binary-amd64/Packages
+ 2863d823c77eb2c6d2e16646bef58ae4e7862a13              862 main/binary-amd64/Packages.gz
 SHA256:
- 691ed062278e8fbf64fb9fdc0db2eee423eca4361f4175eec4cb3e0bbac0d923              183 Release
- 8f61c30711c855be3c370b35da44092a7e061d72b3d80e0487089c1fd51b06a3              622 main/binary-amd64/Packages
- 23cd2a40d9a14fe250b30f5661d134f013a65c4c4f0214de1a1cab260b7bdcdc              447 main/binary-amd64/Packages.gz
+ 8cffc58269bf386a5e167d1c794ae080adefc6cfa5cd69522b970b837f008a40              183 Release
+ 97f31e857abbf446b662030d4ba5d3dd5c6e9e1c44f119d7bbb786a262141269             1913 main/binary-amd64/Packages
+ 8419a5693446b9d06c46d815e4e167697782d6578b7ee083a0b9187efc7fbbac              862 main/binary-amd64/Packages.gz
 SHA512:
- 275a061b08af8df21a21090e5390d7c9a2bcb74c263ddbb188d868c89b5bf77ad0c3ac5bfe32e08a65188098110a6d04ba2ca6edce7412512d5a40b8d0a777d1              183 Release
- d66f831267c8c88beb257e57109b34a0e04075a70c23866919fe5fa72dff4e32f52adb802a4c6a1070cce0744d9cba7c806f8f8565dd812144a6cfe15a39e5ae              622 main/binary-amd64/Packages
- db67f675aaf002ef06e075bfed20f58bbf58327fc7d1975d5c0e3b7306b6f0b3ec029fbd72f397bb0ef066801e29725f3336aa283e31e8a50faf1df22eee1421              447 main/binary-amd64/Packages.gz
+ 2f4f5f8a01db3627ccabc7c515a8819f7719ab9e32303dc26275831abb3baa7a57ef0bdcedd2cd64f27dd109c73d0ddcc6943594a8322040cf7ced37a32836d8              183 Release
+ 6648de797a143653b3210fd89d40165149292cf302cc13394950ef86d4ea4ca72be600865e2986c2d43f99787c4bb86d2c0eb5aa770ed28804aa56546dc4871f             1913 main/binary-amd64/Packages
+ e7a666689f7de92ac023548d43e6d3feb90c9308e6968f37ec56845cb35f0a81103301d396828573a43df6c4e2f8f15ac889d25ecfb7c1d2680ea3377cfd6275              862 main/binary-amd64/Packages.gz
