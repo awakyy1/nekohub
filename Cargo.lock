@@ -506,42 +506,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
-name = "fleet-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "glob",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "fleet-ssh"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "fleet-core",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "fleet-tui"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "clap",
- "crossterm",
- "dirs",
- "fleet-core",
- "fleet-ssh",
- "futures-util",
- "ratatui",
- "tokio",
-]
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -858,6 +822,42 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "nekohub-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "glob",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nekohub-ssh"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "nekohub-core",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "nekohub-tui"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "crossterm",
+ "dirs",
+ "futures-util",
+ "nekohub-core",
+ "nekohub-ssh",
+ "ratatui",
+ "tokio",
 ]
 
 [[package]]

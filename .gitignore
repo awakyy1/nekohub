@@ -1,6 +1,6 @@
 /target/
+/dist/
 *.log
 .idea/
 .vscode/
-.fleet-tui.toml
-
+.nekohub.toml

@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "crates/fleet-core",
-    "crates/fleet-ssh",
-    "crates/fleet-tui",
+    "crates/nekohub-core",
+    "crates/nekohub-ssh",
+    "crates/nekohub-tui",
 ]
 resolver = "2"
 

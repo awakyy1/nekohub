@@ -3,7 +3,7 @@
 use std::{collections::HashMap, path::PathBuf, process::Stdio, time::Duration};
 
 use async_trait::async_trait;
-use fleet_core::{CollectError, Collector, HostTarget, RawHostSample};
+use nekohub_core::{CollectError, Collector, HostTarget, RawHostSample};
 use tokio::{io::AsyncWriteExt, process::Command, time::Instant};
 
 const PROBE: &str = include_str!("probe.sh");
@@ -36,11 +36,13 @@ impl OpenSshCollector {
         }
     }
 
+    #[must_use]
     pub fn with_executable(mut self, executable: impl Into<String>) -> Self {
         self.executable = executable.into();
         self
     }
 
+    #[must_use]
     pub fn with_config_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.config_path = Some(path.into());
         self
@@ -141,6 +143,12 @@ fn single_line(value: &str) -> String {
     }
 }
 
+/// Parses the versioned key-value response emitted by the Linux probe.
+///
+/// # Errors
+///
+/// Returns [`CollectError::Protocol`] when the response has an unsupported
+/// version or a required value is missing or malformed.
 pub fn parse_probe(
     host_id: &str,
     input: &str,

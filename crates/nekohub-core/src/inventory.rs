@@ -26,6 +26,12 @@ pub enum InventoryError {
 }
 
 impl Inventory {
+    /// Discovers concrete host aliases from an OpenSSH configuration file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InventoryError`] when the configuration cannot be read or an
+    /// `Include` glob is invalid.
     pub fn from_ssh_config(path: &Path) -> Result<Self, InventoryError> {
         let mut aliases = BTreeSet::new();
         let mut visited = HashSet::new();
@@ -66,10 +72,7 @@ fn parse_file(
             continue;
         };
         if keyword.eq_ignore_ascii_case("host") {
-            for alias in value
-                .split_whitespace()
-                .filter(|value| is_concrete_alias(value))
-            {
+            for alias in value.split_whitespace().filter(is_concrete_alias) {
                 aliases.insert(alias.to_owned());
             }
         } else if keyword.eq_ignore_ascii_case("include") {

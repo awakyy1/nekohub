@@ -8,13 +8,17 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use app::{App, View};
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
-use fleet_core::{Collector, HostSnapshot, HostTarget, Inventory, RateTracker};
-use fleet_ssh::{LocalCollector, OpenSshCollector};
 use futures_util::StreamExt;
+use nekohub_core::{Collector, HostSnapshot, HostTarget, Inventory, RateTracker};
+use nekohub_ssh::{LocalCollector, OpenSshCollector};
 use tokio::sync::{broadcast, mpsc, watch};
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Linux fleet management, designed for the terminal")]
+#[command(
+    name = "nekohub",
+    version,
+    about = "Linux fleet management, designed for the terminal"
+)]
 struct Args {
     /// Open the dashboard with deterministic development data.
     #[arg(long)]
@@ -130,7 +134,7 @@ async fn run_once(
             tracker.apply(first);
             tokio::time::sleep(Duration::from_millis(350)).await;
             let second = collector.collect(&target).await?;
-            Ok::<_, fleet_core::CollectError>((target, tracker.apply(second)))
+            Ok::<_, nekohub_core::CollectError>((target, tracker.apply(second)))
         });
     }
     let mut failed = false;
@@ -189,6 +193,7 @@ async fn run_tui(
     run_event_loop(&mut app, None, Some(local), Some(remote), refresh_every).await
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_event_loop(
     app: &mut App,
     initial: Option<(Vec<HostTarget>, Arc<dyn Collector>)>,
@@ -242,7 +247,7 @@ async fn run_event_loop(
                     match app.view {
                         View::Welcome => match key.code {
                             KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab
-                            | KeyCode::Char('j') | KeyCode::Char('k') => app.toggle_welcome_choice(),
+                            | KeyCode::Char('j' | 'k') => app.toggle_welcome_choice(),
                             KeyCode::Enter if app.welcome_selected == 0 => {
                                 if let Some(collector) = local_collector.as_ref() {
                                     let target = local_target();
@@ -350,7 +355,7 @@ async fn host_worker(
         }
 
         tokio::select! {
-            _ = tokio::time::sleep(refresh_every) => {}
+            () = tokio::time::sleep(refresh_every) => {}
             _ = refresh_rx.recv() => {}
             changed = shutdown_rx.changed() => {
                 if changed.is_err() || *shutdown_rx.borrow() {

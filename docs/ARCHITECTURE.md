@@ -15,11 +15,11 @@ OpenSSH config -> inventory -> one collector task per host -> latest snapshot
 
 ## Crates
 
-- `fleet-core`: host identity, raw samples, normalized snapshots, rate
+- `nekohub-core`: host identity, raw samples, normalized snapshots, rate
   calculation, inventory discovery, and the collector port. It has no terminal
   or process dependency.
-- `fleet-ssh`: OpenSSH process adapter and the versioned, read-only Linux probe.
-- `fleet-tui`: scheduling, demo data, interaction, and presentation.
+- `nekohub-ssh`: OpenSSH process adapter and the versioned, read-only Linux probe.
+- `nekohub-tui`: scheduling, demo data, interaction, and presentation.
 
 This separation makes parsers and metric semantics testable without a terminal
 or reachable server. It also leaves room for a native SSH adapter or a
@@ -62,4 +62,3 @@ protocol change that changes meaning must increment the version.
 Add a capability only when its absence is representable. For example, a host
 without systemd is not broken; it simply has no systemd provider. UI screens
 depend on normalized capabilities, never directly on a distro name.
-

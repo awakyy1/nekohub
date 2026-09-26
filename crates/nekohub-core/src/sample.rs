@@ -30,6 +30,7 @@ pub struct RateTracker {
 }
 
 impl RateTracker {
+    #[allow(clippy::cast_precision_loss)]
     pub fn apply(&mut self, raw: RawHostSample) -> HostSnapshot {
         let (cpu_percent, network) = self
             .previous
@@ -126,7 +127,7 @@ mod tests {
         tracker.apply(raw(1, 100, 50, 10));
         let snapshot = tracker.apply(raw(3, 300, 130, 210));
         assert_eq!(snapshot.cpu_percent, Some(60.0));
-        assert_eq!(snapshot.network.read_per_sec, 100.0);
+        assert!((snapshot.network.read_per_sec - 100.0).abs() < f64::EPSILON);
         assert_eq!(snapshot.memory.percent(), Some(75.0));
     }
 }

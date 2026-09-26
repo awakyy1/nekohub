@@ -1,12 +1,12 @@
 [package]
-name = "fleet-tui"
+name = "nekohub-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "fleet"
+name = "nekohub"
 path = "src/main.rs"
 
 [dependencies]
@@ -14,12 +14,11 @@ async-trait.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 dirs.workspace = true
-fleet-core = { path = "../fleet-core" }
-fleet-ssh = { path = "../fleet-ssh" }
+nekohub-core = { path = "../nekohub-core" }
+nekohub-ssh = { path = "../nekohub-ssh" }
 futures-util.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
 
 [lints]
 workspace = true
-

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use fleet_core::{HostSnapshot, HostTarget};
+use nekohub_core::{HostSnapshot, HostTarget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -93,6 +93,7 @@ impl App {
         self.view = View::Overview;
     }
 
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn apply_snapshot(&mut self, snapshot: HostSnapshot) {
         let Some(index) = self.by_id.get(&snapshot.host_id).copied() else {
             return;
@@ -102,7 +103,8 @@ impl App {
             if host.cpu_history.len() == 120 {
                 host.cpu_history.pop_front();
             }
-            host.cpu_history.push_back(cpu.round() as u64);
+            host.cpu_history
+                .push_back(cpu.clamp(0.0, 100.0).round() as u64);
         }
         host.snapshot = Some(snapshot);
         host.last_error = None;

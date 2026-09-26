@@ -1,7 +1,13 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
-use fleet_core::{CollectError, Collector, HostTarget, RawHostSample};
+use nekohub_core::{CollectError, Collector, HostTarget, RawHostSample};
 
 #[derive(Debug)]
 pub struct DemoCollector {
@@ -22,7 +28,7 @@ impl Collector for DemoCollector {
         tokio::time::sleep(Duration::from_millis(35 + host.id.len() as u64 * 7)).await;
         let elapsed = self.started.elapsed().as_secs_f64().max(1.0);
         let seed = host.id.bytes().map(u64::from).sum::<u64>() % 37;
-        let wave = ((elapsed / 3.0 + seed as f64).sin() + 1.0) / 2.0;
+        let wave = f64::midpoint((elapsed / 3.0 + seed as f64).sin(), 1.0);
         let cpu = 8.0 + wave * (25.0 + seed as f64);
         let total_ticks = (elapsed * 1_000.0) as u64;
         let idle_ticks = (total_ticks as f64 * (1.0 - cpu / 100.0)) as u64;

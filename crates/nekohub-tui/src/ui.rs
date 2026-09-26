@@ -1,3 +1,9 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+
 use std::time::Duration;
 
 use ratatui::{
@@ -59,7 +65,7 @@ fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let outer = Block::default()
         .title(Line::from(vec![
             Span::styled(format!(" {spinner} "), Style::default().fg(pulse)),
-            Span::styled("LINUX FLEET", Style::default().fg(AMBER).bold()),
+            Span::styled("nekoHub", Style::default().fg(AMBER).bold()),
             Span::styled(" / INITIAL SETUP ", Style::default().fg(DIM)),
         ]))
         .title_bottom(Line::from(" ↑↓ select  ·  Enter continue  ·  q quit ").centered())
@@ -730,7 +736,7 @@ fn human_duration(duration: Duration) -> String {
     } else if seconds >= 60 {
         format!("{}m", seconds / 60)
     } else {
-        format!("{}s", seconds)
+        format!("{seconds}s")
     }
 }
 
@@ -751,7 +757,7 @@ mod tests {
         for (width, height) in [(80, 24), (106, 40), (160, 45)] {
             let app = App::new(
                 (0..8)
-                    .map(|index| fleet_core::HostTarget::from_alias(format!("host-{index}")))
+                    .map(|index| nekohub_core::HostTarget::from_alias(format!("host-{index}")))
                     .collect(),
             );
             let backend = TestBackend::new(width, height);

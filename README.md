@@ -1,13 +1,10 @@
-# fleet-tui (working title)
+# nekoHub
 
 Linux fleet management, designed for the terminal.
 
-`fleet-tui` is an agentless terminal application for people who operate several
+`nekoHub` is an agentless terminal application for people who operate several
 Linux machines. It starts from the SSH setup they already trust and turns raw
 host data into a fast fleet overview and useful drill-downs.
-
-The working title is intentionally plain. Naming and branding should follow
-product validation, not precede it.
 
 ## What exists today
 
@@ -32,11 +29,11 @@ This repository is the architectural seed and first executable vertical slice:
 Requires a current stable Rust toolchain and an `ssh` executable.
 
 ```bash
-cargo run -p fleet-tui --bin fleet
-cargo run -p fleet-tui --bin fleet -- --demo
-cargo run -p fleet-tui --bin fleet -- --host my-vps --host home-server
-cargo run -p fleet-tui --bin fleet -- --once --local
-cargo run -p fleet-tui --bin fleet -- --once --host my-vps
+cargo run -p nekohub-tui --bin nekohub
+cargo run -p nekohub-tui --bin nekohub -- --demo
+cargo run -p nekohub-tui --bin nekohub -- --host my-vps --host home-server
+cargo run -p nekohub-tui --bin nekohub -- --once --local
+cargo run -p nekohub-tui --bin nekohub -- --once --host my-vps
 ```
 
 On launch, choose **Monitor this machine** for direct, read-only Linux metrics,
@@ -52,13 +49,14 @@ and `q` quits.
 Install a downloaded build with:
 
 ```bash
-sudo apt install ./fleet-tui_0.1.0_amd64.deb
-fleet
+sudo apt install ./nekohub_0.1.0_amd64.deb
+nekohub
 ```
 
 The leading `./` matters: this installs a local package. Supporting
-`sudo apt install fleet-tui` without a file requires publishing and signing an
-APT repository, which is planned after the package and name stabilize.
+`sudo apt install nekohub` without a file requires publishing and signing an
+APT repository. The package is intentionally named `nekohub`, so the final
+repository command will remain `sudo apt install nekohub`.
 
 ## Product boundary
 

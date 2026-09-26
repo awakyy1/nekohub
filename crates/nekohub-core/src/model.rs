@@ -29,6 +29,7 @@ pub struct Usage {
 }
 
 impl Usage {
+    #[allow(clippy::cast_precision_loss)]
     pub fn percent(self) -> Option<f64> {
         (self.total > 0).then(|| self.used as f64 / self.total as f64 * 100.0)
     }
