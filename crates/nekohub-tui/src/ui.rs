@@ -1059,7 +1059,7 @@ fn render_monitor_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut lines = vec![
         Line::styled("Groups", Style::default().fg(DIM)),
         Line::styled(
-            format!("◆ {:<14} 1", truncate(&app.local_name, 14)),
+            format!("◆ {:<14} 1", clipped(&app.local_name, 14)),
             Style::default().fg(AMBER).bold(),
         ),
     ];
@@ -1083,6 +1083,10 @@ fn render_monitor_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         area,
     );
+}
+
+fn clipped(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
 }
 
 fn render_soft_metric(
