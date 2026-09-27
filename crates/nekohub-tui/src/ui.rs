@@ -44,6 +44,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         }
         View::Home => {
             render_home(frame, frame.area(), app);
+            render_tab_transition(frame, frame.area(), app);
             return;
         }
         View::CreateGroup => {
@@ -53,10 +54,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         }
         View::RemotePicker => {
             render_remote_picker(frame, frame.area(), app);
+            render_tab_transition(frame, frame.area(), app);
             return;
         }
         View::Settings => {
             render_settings(frame, frame.area(), app);
+            render_tab_transition(frame, frame.area(), app);
             return;
         }
         View::Overview | View::Detail => {}
@@ -86,6 +89,47 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             unreachable!("setup views return before shell render")
         }
     }
+    render_tab_transition(frame, frame.area(), app);
+}
+
+fn render_tab_transition(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some((age, direction)) = app.tab_transition() else {
+        return;
+    };
+    let revealed = area.width.saturating_mul(age as u16) / 5;
+    let hidden = area.width.saturating_sub(revealed);
+    if hidden == 0 {
+        return;
+    }
+    let mask = if direction > 0 {
+        Rect::new(area.x.saturating_add(revealed), area.y, hidden, area.height)
+    } else {
+        Rect::new(area.x, area.y, hidden, area.height)
+    };
+    frame.render_widget(Clear, mask);
+    frame.render_widget(Block::default().style(Style::default().bg(INK)), mask);
+
+    let edge_x = if direction > 0 {
+        mask.x
+    } else {
+        mask.right().saturating_sub(2)
+    };
+    let edge = Rect::new(edge_x, area.y, 2.min(area.width), area.height);
+    let edge_line = if direction > 0 {
+        Line::from(vec![
+            Span::styled("▓", Style::default().fg(AMBER)),
+            Span::styled("░", Style::default().fg(DIM)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("░", Style::default().fg(DIM)),
+            Span::styled("▓", Style::default().fg(AMBER)),
+        ])
+    };
+    let scanline = std::iter::repeat_with(|| edge_line.clone())
+        .take(usize::from(area.height))
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(scanline), edge);
 }
 
 fn render_agent_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -195,7 +239,7 @@ fn render_app_chrome(
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(5),
             Constraint::Length(3),
             Constraint::Length(1),
             Constraint::Min(8),
@@ -211,13 +255,37 @@ fn render_home_header(frame: &mut Frame<'_>, area: Rect, app: &App, active_nav: 
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(area);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  (^._.^)  ", Style::default().fg(AMBER).bold()),
-            Span::styled("neko", Style::default().fg(TEXT).bold()),
-            Span::styled("Hub", Style::default().fg(AMBER).bold()),
-        ])),
-        columns[0],
+    let logo = if columns[0].width >= 40 {
+        vec![
+            Line::from(vec![
+                Span::styled("  /\\_/\\", Style::default().fg(AMBER).bold()),
+                Span::styled("    _       _  _      _", Style::default().fg(DIM)),
+            ]),
+            Line::styled(
+                "  _ _  ___| |_____| || |_  _| |__",
+                Style::default().fg(TEXT).bold(),
+            ),
+            Line::styled(
+                " | ' \\/ -_) / / _ \\ __ | || | '_ \\",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::styled(
+                " |_||_\\___|_\\_\\___/_||_|\\_,_|_.__/",
+                Style::default().fg(AMBER),
+            ),
+        ]
+    } else {
+        vec![Line::from(vec![
+            Span::styled(" /\\_/\\  ", Style::default().fg(AMBER).bold()),
+            Span::styled("nekoHub", Style::default().fg(TEXT).bold()),
+        ])]
+    };
+    frame.render_widget(Paragraph::new(logo), columns[0]);
+    let nav_area = Rect::new(
+        columns[1].x,
+        columns[1].y.saturating_add(1),
+        columns[1].width,
+        columns[1].height.saturating_sub(1).min(3),
     );
     let buttons = Layout::default()
         .direction(Direction::Horizontal)
@@ -226,7 +294,7 @@ fn render_home_header(frame: &mut Frame<'_>, area: Rect, app: &App, active_nav: 
             Constraint::Ratio(1, 3),
             Constraint::Ratio(1, 3),
         ])
-        .split(columns[1]);
+        .split(nav_area);
     for (index, (label, shortcut)) in [("Home", "1"), ("Machines", "2"), ("Settings", "3")]
         .into_iter()
         .enumerate()
@@ -322,19 +390,16 @@ fn render_group_grid(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize) {
     let selected = app.home_focus == HomeFocus::Groups && app.home_selected == index;
     let is_add = index + 1 == app.home_item_count();
+    if is_add {
+        render_add_group_button(frame, area, app, selected);
+        return;
+    }
     let (title, count, state, accent) = if index == 0 {
         (
             app.local_name.clone(),
             "1 machine".to_owned(),
             "● local · ready".to_owned(),
             GREEN,
-        )
-    } else if is_add {
-        (
-            "New group".to_owned(),
-            "Create a machine group".to_owned(),
-            "Enter to add".to_owned(),
-            ORANGE,
         )
     } else {
         let group = &app.machine_groups[index - 1];
@@ -351,7 +416,6 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
         )
     };
     let border = if selected { accent } else { LINE };
-    let marker = if is_add { "+" } else { "◆" };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
@@ -362,7 +426,7 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
-                Span::styled(format!(" {marker}  "), Style::default().fg(accent).bold()),
+                Span::styled(" ◆  ", Style::default().fg(accent).bold()),
                 Span::styled(title, Style::default().fg(TEXT).bold()),
             ]),
             Line::styled(format!("    {count}"), Style::default().fg(DIM)),
@@ -371,6 +435,43 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
         ])
         .wrap(Wrap { trim: true }),
         inner,
+    );
+}
+
+fn render_add_group_button(frame: &mut Frame<'_>, area: Rect, app: &App, selected: bool) {
+    let width = area.width.min(16);
+    let height = area.height.min(6);
+    let button = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let color = if selected { ORANGE } else { DIM };
+    let pulse = if selected && app.animation_tick % 6 < 3 {
+        "✦"
+    } else {
+        "+"
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("  ┌┈┈┈┈┈┈┈┈┈┈┐", Style::default().fg(color)),
+            Line::from(vec![
+                Span::styled("  ┊    ", Style::default().fg(color)),
+                Span::styled(pulse, Style::default().fg(ORANGE).bold()),
+                Span::styled("     ┊", Style::default().fg(color)),
+            ]),
+            Line::styled("  └┈┈┈┈┈┈┈┈┈┈┘", Style::default().fg(color)),
+            Line::styled(
+                "    New group",
+                Style::default()
+                    .fg(if selected { TEXT } else { Color::Gray })
+                    .bold(),
+            ),
+            Line::styled("    Enter to add", Style::default().fg(DIM)),
+        ])
+        .style(Style::default().bg(if selected { SURFACE } else { INK })),
+        button,
     );
 }
 
