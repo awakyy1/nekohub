@@ -8,15 +8,21 @@ use std::time::Duration;
 
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Sparkline, Table, Wrap,
+        Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Sparkline, Table, Widget,
+        Wrap,
     },
 };
 
-use crate::app::{App, HomeFocus, HostState, View};
+use crate::{
+    app::{App, HomeFocus, HostState, View},
+    machines::INSTALLED_TAG,
+    preferences::{FontProfile, Theme},
+};
 
 const AMBER: Color = Color::Rgb(126, 213, 177);
 const ORANGE: Color = Color::Rgb(216, 184, 122);
@@ -30,6 +36,18 @@ const LINE: Color = Color::Rgb(43, 56, 51);
 const TEXT: Color = Color::Rgb(215, 224, 219);
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
+    let area = frame.area();
+    render_content(frame, app);
+    frame.render_widget(
+        ThemeOverlay {
+            accent: theme_color(app.theme),
+            font_profile: app.font_profile,
+        },
+        area,
+    );
+}
+
+fn render_content(frame: &mut Frame<'_>, app: &App) {
     match app.view {
         View::Welcome => {
             render_welcome(frame, frame.area(), app);
@@ -55,6 +73,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         }
         View::RemotePicker => {
             render_remote_picker(frame, frame.area(), app);
+            return;
+        }
+        View::RemoteInstall => {
+            render_remote_picker(frame, frame.area(), app);
+            render_remote_install(frame, frame.area(), app);
             return;
         }
         View::Settings => {
@@ -84,9 +107,62 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         | View::Home
         | View::CreateGroup
         | View::RemotePicker
+        | View::RemoteInstall
         | View::Settings => {
             unreachable!("setup views return before shell render")
         }
+    }
+}
+
+struct ThemeOverlay {
+    accent: Color,
+    font_profile: FontProfile,
+}
+
+impl Widget for ThemeOverlay {
+    fn render(self, area: Rect, buffer: &mut Buffer) {
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                let Some(cell) = buffer.cell_mut((x, y)) else {
+                    continue;
+                };
+                let style = cell.style();
+                if style.fg == Some(AMBER) {
+                    cell.set_fg(self.accent);
+                }
+                if style.bg == Some(AMBER) {
+                    cell.set_bg(self.accent);
+                }
+                let replacement = match (self.font_profile, cell.symbol()) {
+                    (FontProfile::Rounded, _) => None,
+                    (FontProfile::Compact, "◆") => Some("▸"),
+                    (FontProfile::Compact, "◇") => Some("▹"),
+                    (FontProfile::Compact, "●") => Some("▪"),
+                    (FontProfile::Compact, "○") => Some("▫"),
+                    (FontProfile::Compact, "›") => Some("→"),
+                    (FontProfile::Ascii, "◆") => Some("#"),
+                    (FontProfile::Ascii, "◇") => Some("+"),
+                    (FontProfile::Ascii, "●" | "•") => Some("*"),
+                    (FontProfile::Ascii, "○") => Some("o"),
+                    (FontProfile::Ascii, "›" | "→") => Some(">"),
+                    (FontProfile::Ascii, "━") => Some("-"),
+                    (FontProfile::Ascii, "·") => Some("."),
+                    _ => None,
+                };
+                if let Some(symbol) = replacement {
+                    cell.set_symbol(symbol);
+                }
+            }
+        }
+    }
+}
+
+const fn theme_color(theme: Theme) -> Color {
+    match theme {
+        Theme::Pink => Color::Rgb(239, 139, 181),
+        Theme::Blue => Color::Rgb(112, 166, 255),
+        Theme::Red => Color::Rgb(235, 101, 101),
+        Theme::Purple => Color::Rgb(180, 132, 255),
     }
 }
 
@@ -631,7 +707,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area,
         app,
         2,
-        "↑↓ select  ·  Enter/Space change  ·  Esc home  ·  m machines  ·  q quit",
+        "↑↓ section  ·  ←→ choose  ·  Enter apply  ·  Esc home  ·  q quit",
     );
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -683,6 +759,10 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         render_appearance_settings(frame, columns[2], app, color);
         return;
     }
+    if app.settings_selected == 1 {
+        render_theme_settings(frame, columns[2], app, color);
+        return;
+    }
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(title, Style::default().fg(color).bold()),
@@ -719,6 +799,7 @@ fn render_appearance_settings(frame: &mut Frame<'_>, area: Rect, app: &App, colo
         .constraints([
             Constraint::Length(3),
             Constraint::Length(6),
+            Constraint::Length(7),
             Constraint::Min(2),
         ])
         .split(inner);
@@ -759,12 +840,115 @@ fn render_appearance_settings(frame: &mut Frame<'_>, area: Rect, app: &App, colo
         ),
         rows[1],
     );
+    let font_options = FontProfile::ALL.map(|profile| {
+        let selected = app.font_profile == profile;
+        Span::styled(
+            format!(" {} ", profile.label()),
+            if selected {
+                Style::default().fg(INK).bg(AMBER).bold()
+            } else {
+                Style::default().fg(Color::Gray)
+            },
+        )
+    });
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![Span::styled(
+                " Interface lettering ",
+                Style::default().fg(TEXT).bold(),
+            )]),
+            Line::from(""),
+            Line::from(font_options.to_vec()),
+            Line::from(""),
+            Line::styled(
+                " ←→ changes symbols and visual density · terminal controls the real font",
+                Style::default().fg(DIM),
+            ),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(color)),
+        ),
+        rows[2],
+    );
     if let Some(notice) = app.settings_notice.as_deref() {
         frame.render_widget(
             Paragraph::new(notice).style(Style::default().fg(color)),
-            rows[2],
+            rows[3],
         );
     }
+}
+
+fn render_theme_settings(frame: &mut Frame<'_>, area: Rect, app: &App, color: Color) {
+    let block = Block::default()
+        .title(" THEMES ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(8),
+            Constraint::Min(2),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Theme color", Style::default().fg(color).bold()),
+            Line::styled(
+                "One focused color, carried through the whole interface.",
+                Style::default().fg(Color::Gray),
+            ),
+        ]),
+        rows[0],
+    );
+    let cards = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Ratio(1, 4); 4])
+        .split(rows[1]);
+    for (index, theme) in Theme::ALL.into_iter().enumerate() {
+        let selected = app.theme == theme;
+        let swatch = theme_color(theme);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled("██████", Style::default().fg(swatch)),
+                Line::from(""),
+                Line::styled(
+                    theme.label(),
+                    if selected {
+                        Style::default().fg(INK).bg(swatch).bold()
+                    } else {
+                        Style::default().fg(TEXT)
+                    },
+                ),
+                Line::styled(
+                    if selected { "● active" } else { "○ select" },
+                    Style::default().fg(swatch),
+                ),
+            ])
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(if selected { swatch } else { LINE })),
+            ),
+            cards[index],
+        );
+    }
+    let message = app
+        .settings_notice
+        .as_deref()
+        .unwrap_or("Use ←→ or Enter to preview. Changes are saved immediately.");
+    frame.render_widget(
+        Paragraph::new(message).style(Style::default().fg(color)),
+        rows[2],
+    );
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1002,11 +1186,15 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area,
         app,
         1,
-        "↑↓ select  ·  Enter inspect  ·  Esc home  ·  s settings  ·  q quit",
+        "↑↓ select  ·  Enter open  ·  + install agent  ·  Esc home  ·  q quit",
     );
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Min(7)])
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(7),
+            Constraint::Length(4),
+        ])
         .split(inner);
     frame.render_widget(
         Paragraph::new(vec![
@@ -1022,12 +1210,12 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if let Some(notice) = &app.remote_notice {
         frame.render_widget(
             Paragraph::new(vec![
-                Line::styled("AGENT PAIRING", Style::default().fg(AMBER).bold()),
+                Line::styled("MACHINE STATUS", Style::default().fg(AMBER).bold()),
                 Line::from(""),
                 Line::from(notice.as_str()),
                 Line::from(""),
                 Line::styled(
-                    "SSH remains available for discovery and administration.",
+                    "SSH is used only for setup and administration, never for metric polling.",
                     Style::default().fg(DIM),
                 ),
             ])
@@ -1058,12 +1246,21 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     });
     let remote_rows = app.remote_hosts.iter().enumerate().map(|(index, host)| {
         let selected = index + 1 == app.remote_selected;
+        let installed = host.tags.iter().any(|tag| tag == INSTALLED_TAG);
         Row::new([
             if selected { "›" } else { " " },
             host.display_name.as_str(),
-            "SSH inventory",
+            if installed {
+                "nekoHub agent"
+            } else {
+                "SSH inventory"
+            },
             "Unassigned",
-            "○ pairing needed",
+            if installed {
+                "● agent installed"
+            } else {
+                "○ agent needed"
+            },
         ])
         .style(if selected {
             Style::default().fg(INK).bg(AMBER).bold()
@@ -1096,6 +1293,119 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .border_style(Style::default().fg(DIM)),
     );
     frame.render_widget(table, panel);
+
+    let install_selected = app.remote_install_selected();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                if install_selected { " › + " } else { "   + " },
+                Style::default().fg(AMBER).bold(),
+            ),
+            Span::styled(
+                "Install agent over SSH",
+                if install_selected {
+                    Style::default().fg(INK).bg(AMBER).bold()
+                } else {
+                    Style::default().fg(TEXT).bold()
+                },
+            ),
+            Span::styled("    Connect with user@machine", Style::default().fg(DIM)),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(if install_selected { AMBER } else { LINE })),
+        ),
+        rows[2],
+    );
+}
+
+fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(76);
+    let height = area.height.min(18);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" /\\ ", Style::default().fg(AMBER).bold()),
+            Span::styled(" INSTALL REMOTE AGENT ", Style::default().fg(TEXT).bold()),
+        ]))
+        .title_bottom(Line::from(" Enter connect & install  ·  Esc cancel ").centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(AMBER))
+        .style(canvas_style(app));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(3),
+            Constraint::Length(4),
+            Constraint::Min(2),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                "Connect to a Debian or Ubuntu machine over SSH.",
+                Style::default().fg(TEXT).bold(),
+            ),
+            Line::from(""),
+            Line::styled(
+                "nekoHub will add its signed APT repository, install nekohub-agent and start it.",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::styled(
+                "Passwords are handled by SSH and sudo. They are never read or saved by nekoHub.",
+                Style::default().fg(DIM),
+            ),
+        ])
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true }),
+        rows[0],
+    );
+    let cursor = if app.animation_tick % 10 < 5 {
+        "_"
+    } else {
+        " "
+    };
+    frame.render_widget(
+        Paragraph::new(format!(" {}{cursor}", app.remote_install_draft)).block(
+            Block::default()
+                .title(" SSH destination · user@machine ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(AMBER)),
+        ),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("What happens next", Style::default().fg(AMBER).bold()),
+            Line::styled(
+                "The interface briefly yields to the normal SSH session for host verification and password prompts.",
+                Style::default().fg(Color::Gray),
+            ),
+        ])
+        .wrap(Wrap { trim: true }),
+        rows[2],
+    );
+    if let Some(error) = app.remote_install_error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(error)
+                .style(Style::default().fg(RED))
+                .alignment(Alignment::Center),
+            rows[3],
+        );
+    }
 }
 
 fn render_monitoring_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -2369,6 +2679,16 @@ mod tests {
             app.cancel_group_creation();
             app.open_settings();
             terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.settings_selected = 1;
+            app.theme = Theme::Purple;
+            app.font_profile = FontProfile::Ascii;
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.open_remote_picker();
+            app.remote_selected = app.remote_item_count() - 1;
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.begin_remote_install();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.cancel_remote_install();
             app.start_monitoring(nekohub_core::HostTarget::from_alias("local"));
             terminal.draw(|frame| render(frame, &app)).unwrap();
         }

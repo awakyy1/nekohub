@@ -2,7 +2,11 @@ use std::collections::{HashMap, VecDeque};
 
 use nekohub_core::{HostSnapshot, HostTarget};
 
-use crate::groups::MachineGroup;
+use crate::{
+    groups::MachineGroup,
+    machines::INSTALLED_TAG,
+    preferences::{FontProfile, Theme},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -12,6 +16,7 @@ pub enum View {
     Home,
     CreateGroup,
     RemotePicker,
+    RemoteInstall,
     Settings,
     Overview,
     Detail,
@@ -73,6 +78,8 @@ pub struct App {
     pub monitor_selected: usize,
     pub navigation_motion: Option<NavigationMotion>,
     pub background_enabled: bool,
+    pub theme: Theme,
+    pub font_profile: FontProfile,
     pub settings_notice: Option<String>,
     pub machine_groups: Vec<MachineGroup>,
     pub group_draft: String,
@@ -80,6 +87,8 @@ pub struct App {
     pub home_notice: Option<String>,
     pub remote_hosts: Vec<HostTarget>,
     pub remote_selected: usize,
+    pub remote_install_draft: String,
+    pub remote_install_error: Option<String>,
     pub animation_tick: u64,
     pub welcome_notice: Option<String>,
     pub remote_notice: Option<String>,
@@ -107,6 +116,8 @@ impl App {
             monitor_selected: 0,
             navigation_motion: None,
             background_enabled: true,
+            theme: Theme::default(),
+            font_profile: FontProfile::default(),
             settings_notice: None,
             machine_groups,
             group_draft: String::new(),
@@ -114,6 +125,8 @@ impl App {
             home_notice: None,
             remote_hosts,
             remote_selected: 0,
+            remote_install_draft: String::new(),
+            remote_install_error: None,
             animation_tick: 0,
             welcome_notice: None,
             remote_notice: None,
@@ -147,6 +160,8 @@ impl App {
             monitor_selected: 0,
             navigation_motion: None,
             background_enabled: true,
+            theme: Theme::default(),
+            font_profile: FontProfile::default(),
             settings_notice: None,
             machine_groups: Vec::new(),
             group_draft: String::new(),
@@ -154,6 +169,8 @@ impl App {
             home_notice: None,
             remote_hosts: Vec::new(),
             remote_selected: 0,
+            remote_install_draft: String::new(),
+            remote_install_error: None,
             animation_tick: 0,
             welcome_notice: None,
             remote_notice: None,
@@ -379,6 +396,32 @@ impl App {
         });
     }
 
+    pub fn next_theme(&mut self) {
+        self.theme = self.theme.next();
+        self.settings_notice = Some(format!("{} theme applied.", self.theme.label()));
+    }
+
+    pub fn previous_theme(&mut self) {
+        self.theme = self.theme.previous();
+        self.settings_notice = Some(format!("{} theme applied.", self.theme.label()));
+    }
+
+    pub fn next_font_profile(&mut self) {
+        self.font_profile = self.font_profile.next();
+        self.settings_notice = Some(format!(
+            "{} interface lettering applied.",
+            self.font_profile.label()
+        ));
+    }
+
+    pub fn previous_font_profile(&mut self) {
+        self.font_profile = self.font_profile.previous();
+        self.settings_notice = Some(format!(
+            "{} interface lettering applied.",
+            self.font_profile.label()
+        ));
+    }
+
     pub fn open_agent_confirmation(&mut self) {
         self.agent_confirm_selected = 1;
         self.view = View::AgentConfirm;
@@ -450,20 +493,110 @@ impl App {
     }
 
     pub fn next_remote(&mut self) {
-        self.remote_selected = (self.remote_selected + 1) % (self.remote_hosts.len() + 1);
+        self.remote_selected = (self.remote_selected + 1) % self.remote_item_count();
+        self.remote_notice = None;
     }
 
     pub fn previous_remote(&mut self) {
         self.remote_selected = self
             .remote_selected
             .checked_sub(1)
-            .unwrap_or(self.remote_hosts.len());
+            .unwrap_or(self.remote_item_count() - 1);
+        self.remote_notice = None;
+    }
+
+    pub fn remote_item_count(&self) -> usize {
+        self.remote_hosts.len() + 2
+    }
+
+    pub fn remote_install_selected(&self) -> bool {
+        self.remote_selected + 1 == self.remote_item_count()
+    }
+
+    pub fn begin_remote_install(&mut self) {
+        self.remote_install_draft.clear();
+        self.remote_install_error = None;
+        self.remote_notice = None;
+        self.view = View::RemoteInstall;
+    }
+
+    pub fn push_remote_install_character(&mut self, character: char) {
+        if self.remote_install_draft.chars().count() < 128 && !character.is_control() {
+            self.remote_install_draft.push(character);
+            self.remote_install_error = None;
+        }
+    }
+
+    pub fn pop_remote_install_character(&mut self) {
+        self.remote_install_draft.pop();
+        self.remote_install_error = None;
+    }
+
+    pub fn cancel_remote_install(&mut self) {
+        self.remote_install_draft.clear();
+        self.remote_install_error = None;
+        self.view = View::RemotePicker;
+    }
+
+    pub fn remote_install_target(&mut self) -> Result<String, String> {
+        let target = self.remote_install_draft.trim();
+        let valid_characters = target
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".-_@:%[]".contains(character));
+        let valid_shape = target.split_once('@').is_some_and(|(user, host)| {
+            !user.is_empty() && !host.is_empty() && !host.contains('@')
+        });
+        if !valid_characters || !valid_shape || target.starts_with('-') {
+            let message = "Use the SSH destination format user@machine.".to_owned();
+            self.remote_install_error = Some(message.clone());
+            return Err(message);
+        }
+        Ok(target.to_owned())
+    }
+
+    pub fn complete_remote_install(&mut self, target: &str) {
+        if let Some(machine) = self
+            .remote_hosts
+            .iter_mut()
+            .find(|machine| machine.alias == target)
+        {
+            if !machine.tags.iter().any(|tag| tag == INSTALLED_TAG) {
+                machine.tags.push(INSTALLED_TAG.into());
+            }
+        } else {
+            let mut machine = HostTarget::from_alias(target);
+            machine.tags.push(INSTALLED_TAG.into());
+            self.remote_hosts.push(machine);
+        }
+        self.remote_selected = self
+            .remote_hosts
+            .iter()
+            .position(|machine| machine.alias == target)
+            .map_or(0, |index| index + 1);
+        self.remote_install_draft.clear();
+        self.remote_install_error = None;
+        self.remote_notice = Some(format!(
+            "Agent installed on {target}. The machine is now registered in nekoHub."
+        ));
+        self.view = View::RemotePicker;
+    }
+
+    pub fn fail_remote_install(&mut self, message: String) {
+        self.remote_install_error = Some(message);
+        self.view = View::RemoteInstall;
     }
 
     pub fn explain_remote_pairing(&mut self) {
-        self.remote_notice = Some(
-            "Remote monitoring will use the nekoHub agent. Secure pairing arrives in the next version; SSH metric collection is intentionally disabled.".into(),
-        );
+        let installed = self
+            .remote_selected
+            .checked_sub(1)
+            .and_then(|index| self.remote_hosts.get(index))
+            .is_some_and(|machine| machine.tags.iter().any(|tag| tag == INSTALLED_TAG));
+        self.remote_notice = Some(if installed {
+            "The agent is installed and registered. Secure metric pairing is the next connection step; SSH is not used for monitoring.".into()
+        } else {
+            "This SSH host does not have a registered nekoHub agent yet. Select “Install agent over SSH” below to prepare it.".into()
+        });
     }
 
     pub fn online_count(&self) -> usize {
@@ -491,7 +624,7 @@ impl App {
 fn shell_navigation_index(view: View) -> Option<usize> {
     match view {
         View::Home | View::CreateGroup => Some(0),
-        View::RemotePicker | View::Overview | View::Detail => Some(1),
+        View::RemotePicker | View::RemoteInstall | View::Overview | View::Detail => Some(1),
         View::Settings => Some(2),
         View::Welcome | View::AgentConfirm | View::AgentSetup => None,
     }
@@ -606,5 +739,40 @@ mod tests {
         assert_eq!(app.monitor_selected, 6);
         app.next_monitor_section();
         assert_eq!(app.monitor_selected, 0);
+    }
+
+    #[test]
+    fn remote_install_requires_user_and_machine() {
+        let mut app = App::home(Vec::new(), Vec::new());
+        app.begin_remote_install();
+        for character in "root@edge-01".chars() {
+            app.push_remote_install_character(character);
+        }
+        assert_eq!(app.remote_install_target().unwrap(), "root@edge-01");
+        app.remote_install_draft = "edge-01".into();
+        assert!(app.remote_install_target().is_err());
+    }
+
+    #[test]
+    fn completed_remote_install_registers_agent() {
+        let mut app = App::home(Vec::new(), Vec::new());
+        app.complete_remote_install("ops@server");
+        assert_eq!(app.remote_hosts.len(), 1);
+        assert!(
+            app.remote_hosts[0]
+                .tags
+                .iter()
+                .any(|tag| tag == INSTALLED_TAG)
+        );
+        assert_eq!(app.remote_selected, 1);
+    }
+
+    #[test]
+    fn theme_and_lettering_choices_cycle() {
+        let mut app = App::home(Vec::new(), Vec::new());
+        app.next_theme();
+        app.next_font_profile();
+        assert_eq!(app.theme, Theme::Blue);
+        assert_eq!(app.font_profile, FontProfile::Compact);
     }
 }

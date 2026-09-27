@@ -1,12 +1,13 @@
 mod app;
 mod demo;
 mod groups;
+mod machines;
 mod onboarding;
 mod preferences;
 mod terminal;
 mod ui;
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 
 use app::{App, HomeFocus, View};
 use clap::Parser;
@@ -68,7 +69,8 @@ enum CollectionEvent {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let ssh_config = args.ssh_config.clone().unwrap_or_else(default_ssh_config);
-    let remote_hosts = discover_remote_hosts(&args, &ssh_config);
+    let mut remote_hosts = discover_remote_hosts(&args, &ssh_config);
+    machines::merge(&mut remote_hosts, machines::load(&machines::state_path()));
     let timeout = Duration::from_secs(args.timeout);
 
     if args.once {
@@ -209,6 +211,8 @@ async fn run_tui(
         App::new(remote_hosts, machine_groups)
     };
     app.background_enabled = preferences.background_enabled;
+    app.theme = preferences.theme;
+    app.font_profile = preferences.font_profile;
     run_event_loop(&mut app, None, Some(local), refresh_every, state_path).await
 }
 
@@ -263,7 +267,8 @@ async fn run_event_loop(
             },
             Some(input) = input.next() => match input? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if matches!(key.code, KeyCode::Char('q')) && app.view != View::CreateGroup
+                    if matches!(key.code, KeyCode::Char('q'))
+                        && !matches!(app.view, View::CreateGroup | View::RemoteInstall)
                         || matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break Ok(());
@@ -409,27 +414,68 @@ async fn run_event_loop(
                                     );
                                 }
                             }
+                            KeyCode::Enter if app.remote_install_selected() => {
+                                app.begin_remote_install();
+                            }
                             KeyCode::Enter => app.explain_remote_pairing(),
+                            _ => {}
+                        },
+                        View::RemoteInstall => match key.code {
+                            KeyCode::Esc => app.cancel_remote_install(),
+                            KeyCode::Backspace => app.pop_remote_install_character(),
+                            KeyCode::Enter => {
+                                if let Ok(target) = app.remote_install_target() {
+                                    terminal.suspend()?;
+                                    let install_result = install_remote_agent(&target).await;
+                                    terminal.resume()?;
+                                    input = EventStream::new();
+                                    match install_result {
+                                        Ok(()) => {
+                                            app.complete_remote_install(&target);
+                                            if let Err(message) = machines::save(
+                                                &machines::state_path(),
+                                                &app.remote_hosts,
+                                            )
+                                            .await
+                                            {
+                                                app.remote_notice = Some(message);
+                                            }
+                                        }
+                                        Err(message) => app.fail_remote_install(message),
+                                    }
+                                }
+                            }
+                            KeyCode::Char(character) => {
+                                app.push_remote_install_character(character);
+                            }
                             _ => {}
                         },
                         View::Settings => match key.code {
                             KeyCode::Down | KeyCode::Char('j') => app.next_setting(),
                             KeyCode::Up | KeyCode::Char('k') => app.previous_setting(),
-                            KeyCode::Enter | KeyCode::Char(' ')
-                                if app.settings_selected == 0 =>
-                            {
+                            KeyCode::Enter | KeyCode::Char(' ') if app.settings_selected == 0 => {
                                 app.toggle_background();
-                                let updated_preferences = preferences::Preferences {
-                                    background_enabled: app.background_enabled,
-                                };
-                                if let Err(message) = preferences::save(
-                                    &preferences::state_path(),
-                                    updated_preferences,
-                                )
-                                .await
-                                {
-                                    app.settings_notice = Some(message);
-                                }
+                                save_preferences(app).await;
+                            }
+                            KeyCode::Left | KeyCode::Char('h') if app.settings_selected == 0 => {
+                                app.previous_font_profile();
+                                save_preferences(app).await;
+                            }
+                            KeyCode::Right | KeyCode::Char('l') if app.settings_selected == 0 => {
+                                app.next_font_profile();
+                                save_preferences(app).await;
+                            }
+                            KeyCode::Left | KeyCode::Char('h') if app.settings_selected == 1 => {
+                                app.previous_theme();
+                                save_preferences(app).await;
+                            }
+                            KeyCode::Right | KeyCode::Char('l')
+                            | KeyCode::Enter
+                            | KeyCode::Char(' ')
+                                if app.settings_selected == 1 =>
+                            {
+                                app.next_theme();
+                                save_preferences(app).await;
                             }
                             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.open_home(),
                             _ => {}
@@ -461,6 +507,59 @@ async fn run_event_loop(
     let _ = shutdown_tx.send(true);
     while workers.join_next().await.is_some() {}
     result
+}
+
+async fn save_preferences(app: &mut App) {
+    let updated = preferences::Preferences {
+        background_enabled: app.background_enabled,
+        theme: app.theme,
+        font_profile: app.font_profile,
+    };
+    if let Err(message) = preferences::save(&preferences::state_path(), updated).await {
+        app.settings_notice = Some(message);
+    }
+}
+
+async fn install_remote_agent(target: &str) -> Result<(), String> {
+    const REMOTE_INSTALL: &str = r#"set -eu
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL https://awakyy1.github.io/nekohub/install.sh | sudo sh
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO- https://awakyy1.github.io/nekohub/install.sh | sudo sh
+else
+  echo 'curl or wget is required to install the nekoHub repository' >&2
+  exit 1
+fi
+sudo apt-get install -y nekohub-agent
+if command -v systemctl >/dev/null 2>&1; then
+  sudo systemctl enable --now nekohub-agent.service
+  sudo systemctl is-active --quiet nekohub-agent.service
+fi
+echo 'nekoHub agent is ready.'"#;
+
+    println!("\nConnecting to {target}…");
+    println!("SSH or sudo may ask for a password. nekoHub never stores it.\n");
+    let status = tokio::process::Command::new("ssh")
+        .arg("-tt")
+        .arg(target)
+        .arg(REMOTE_INSTALL)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .map_err(|error| format!("Could not start SSH: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Remote installation failed with {}. Press Enter to try again.",
+            status.code().map_or_else(
+                || "an interrupted SSH session".into(),
+                |code| format!("exit code {code}")
+            )
+        ))
+    }
 }
 
 fn begin_agent_setup(

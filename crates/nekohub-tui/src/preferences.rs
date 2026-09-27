@@ -2,16 +2,100 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    #[default]
+    Pink,
+    Blue,
+    Red,
+    Purple,
+}
+
+impl Theme {
+    pub const ALL: [Self; 4] = [Self::Pink, Self::Blue, Self::Red, Self::Purple];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pink => "Sakura",
+            Self::Blue => "Ocean",
+            Self::Red => "Ember",
+            Self::Purple => "Violet",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Pink => Self::Blue,
+            Self::Blue => Self::Red,
+            Self::Red => Self::Purple,
+            Self::Purple => Self::Pink,
+        }
+    }
+
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Pink => Self::Purple,
+            Self::Blue => Self::Pink,
+            Self::Red => Self::Blue,
+            Self::Purple => Self::Red,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FontProfile {
+    #[default]
+    Rounded,
+    Compact,
+    Ascii,
+}
+
+impl FontProfile {
+    pub const ALL: [Self; 3] = [Self::Rounded, Self::Compact, Self::Ascii];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Rounded => "Rounded",
+            Self::Compact => "Compact",
+            Self::Ascii => "ASCII",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Rounded => Self::Compact,
+            Self::Compact => Self::Ascii,
+            Self::Ascii => Self::Rounded,
+        }
+    }
+
+    pub const fn previous(self) -> Self {
+        match self {
+            Self::Rounded => Self::Ascii,
+            Self::Compact => Self::Rounded,
+            Self::Ascii => Self::Compact,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preferences {
     #[serde(default = "background_enabled_by_default")]
     pub background_enabled: bool,
+    #[serde(default)]
+    pub theme: Theme,
+    #[serde(default)]
+    pub font_profile: FontProfile,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             background_enabled: background_enabled_by_default(),
+            theme: Theme::default(),
+            font_profile: FontProfile::default(),
         }
     }
 }
@@ -58,10 +142,12 @@ mod tests {
         let path = directory.path().join("preferences.json");
         let expected = Preferences {
             background_enabled: false,
+            theme: Theme::Purple,
+            font_profile: FontProfile::Ascii,
         };
 
         save(&path, expected).await.unwrap();
 
-        assert!(!load(&path).background_enabled);
+        assert_eq!(load(&path), expected);
     }
 }
