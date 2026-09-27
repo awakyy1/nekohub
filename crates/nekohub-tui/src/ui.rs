@@ -134,7 +134,6 @@ impl Widget for ThemeOverlay {
                     cell.set_bg(self.accent);
                 }
                 let replacement = match (self.font_profile, cell.symbol()) {
-                    (FontProfile::Rounded, _) => None,
                     (FontProfile::Compact, "◆") => Some("▸"),
                     (FontProfile::Compact, "◇") => Some("▹"),
                     (FontProfile::Compact, "●") => Some("▪"),
@@ -1180,6 +1179,7 @@ fn render_welcome_button(frame: &mut Frame<'_>, area: Rect, label: &str, selecte
     );
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let inner = render_app_chrome(
         frame,
