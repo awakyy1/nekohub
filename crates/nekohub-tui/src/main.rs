@@ -1,12 +1,13 @@
 mod app;
 mod demo;
+mod groups;
 mod onboarding;
 mod terminal;
 mod ui;
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use app::{App, View};
+use app::{App, HomeFocus, View};
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
@@ -199,10 +200,11 @@ async fn run_tui(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let local: Arc<dyn Collector> = Arc::new(AgentCollector::new(agent_socket, timeout));
     let state_path = onboarding::state_path();
+    let machine_groups = groups::load(&groups::state_path());
     let mut app = if onboarding::is_complete(&state_path) {
-        App::home(remote_hosts)
+        App::home(remote_hosts, machine_groups)
     } else {
-        App::new(remote_hosts)
+        App::new(remote_hosts, machine_groups)
     };
     run_event_loop(&mut app, None, Some(local), refresh_every, state_path).await
 }
@@ -258,10 +260,36 @@ async fn run_event_loop(
             },
             Some(input) = input.next() => match input? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if matches!(key.code, KeyCode::Char('q'))
+                    if matches!(key.code, KeyCode::Char('q')) && app.view != View::CreateGroup
                         || matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break Ok(());
+                    }
+                    if app.view != View::CreateGroup
+                        && matches!(
+                            app.view,
+                            View::Home
+                                | View::RemotePicker
+                                | View::Settings
+                                | View::Overview
+                                | View::Detail
+                        )
+                    {
+                        match key.code {
+                            KeyCode::Char('1') => {
+                                app.open_home();
+                                continue;
+                            }
+                            KeyCode::Char('2') if app.view != View::RemotePicker => {
+                                app.open_remote_picker();
+                                continue;
+                            }
+                            KeyCode::Char('3') => {
+                                app.open_settings();
+                                continue;
+                            }
+                            _ => {}
+                        }
                     }
                     match app.view {
                         View::Welcome => match key.code {
@@ -310,11 +338,27 @@ async fn run_event_loop(
                             _ => {}
                         },
                         View::Home => match key.code {
-                            KeyCode::Down | KeyCode::Right | KeyCode::Tab | KeyCode::Char('j' | 'l') => {
-                                app.next_home_item();
+                            KeyCode::Tab | KeyCode::BackTab => app.toggle_home_focus(),
+                            KeyCode::Char('m') => app.open_remote_picker(),
+                            KeyCode::Char('s') => app.open_settings(),
+                            KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => {
+                                match app.home_focus {
+                                    HomeFocus::Navigation => app.next_home_nav(),
+                                    HomeFocus::Groups => app.next_home_item(),
+                                }
                             }
-                            KeyCode::Up | KeyCode::Left | KeyCode::BackTab | KeyCode::Char('h' | 'k') => {
-                                app.previous_home_item();
+                            KeyCode::Up | KeyCode::Left | KeyCode::Char('h' | 'k') => {
+                                match app.home_focus {
+                                    HomeFocus::Navigation => app.previous_home_nav(),
+                                    HomeFocus::Groups => app.previous_home_item(),
+                                }
+                            }
+                            KeyCode::Enter if app.home_focus == HomeFocus::Navigation => {
+                                match app.home_nav_selected {
+                                    0 => app.toggle_home_focus(),
+                                    1 => app.open_remote_picker(),
+                                    _ => app.open_settings(),
+                                }
                             }
                             KeyCode::Enter if app.home_selected == 0 => {
                                 if let Some(collector) = local_collector.as_ref() {
@@ -326,8 +370,26 @@ async fn run_event_loop(
                                     );
                                 }
                             }
-                            KeyCode::Enter if app.home_selected == 1 => app.open_remote_picker(),
-                            KeyCode::Enter => app.open_settings(),
+                            KeyCode::Enter if app.home_selected + 1 == app.home_item_count() => {
+                                app.begin_group_creation();
+                            }
+                            KeyCode::Enter => app.show_empty_group_notice(),
+                            _ => {}
+                        },
+                        View::CreateGroup => match key.code {
+                            KeyCode::Esc => app.cancel_group_creation(),
+                            KeyCode::Backspace => app.pop_group_character(),
+                            KeyCode::Enter => {
+                                if app.create_group().is_ok() {
+                                    if let Err(message) = groups::save(
+                                        &groups::state_path(),
+                                        &app.machine_groups,
+                                    ).await {
+                                        app.show_home_notice(message);
+                                    }
+                                }
+                            }
+                            KeyCode::Char(character) => app.push_group_character(character),
                             _ => {}
                         },
                         View::RemotePicker => match key.code {

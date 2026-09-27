@@ -2,16 +2,25 @@ use std::collections::{HashMap, VecDeque};
 
 use nekohub_core::{HostSnapshot, HostTarget};
 
+use crate::groups::MachineGroup;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Welcome,
     AgentConfirm,
     AgentSetup,
     Home,
+    CreateGroup,
     RemotePicker,
     Settings,
     Overview,
     Detail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeFocus {
+    Navigation,
+    Groups,
 }
 
 #[derive(Debug)]
@@ -44,7 +53,13 @@ pub struct App {
     pub view: View,
     pub welcome_selected: usize,
     pub agent_confirm_selected: usize,
+    pub home_focus: HomeFocus,
+    pub home_nav_selected: usize,
     pub home_selected: usize,
+    pub machine_groups: Vec<MachineGroup>,
+    pub group_draft: String,
+    pub group_error: Option<String>,
+    pub home_notice: Option<String>,
     pub remote_hosts: Vec<HostTarget>,
     pub remote_selected: usize,
     pub animation_tick: u64,
@@ -59,14 +74,20 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(remote_hosts: Vec<HostTarget>) -> Self {
+    pub fn new(remote_hosts: Vec<HostTarget>, machine_groups: Vec<MachineGroup>) -> Self {
         Self {
             hosts: Vec::new(),
             selected: 0,
             view: View::Welcome,
             welcome_selected: 0,
             agent_confirm_selected: 1,
+            home_focus: HomeFocus::Groups,
+            home_nav_selected: 0,
             home_selected: 0,
+            machine_groups,
+            group_draft: String::new(),
+            group_error: None,
+            home_notice: None,
             remote_hosts,
             remote_selected: 0,
             animation_tick: 0,
@@ -94,7 +115,13 @@ impl App {
             view: View::Overview,
             welcome_selected: 0,
             agent_confirm_selected: 1,
+            home_focus: HomeFocus::Groups,
+            home_nav_selected: 0,
             home_selected: 0,
+            machine_groups: Vec::new(),
+            group_draft: String::new(),
+            group_error: None,
+            home_notice: None,
             remote_hosts: Vec::new(),
             remote_selected: 0,
             animation_tick: 0,
@@ -109,8 +136,8 @@ impl App {
         }
     }
 
-    pub fn home(remote_hosts: Vec<HostTarget>) -> Self {
-        let mut app = Self::new(remote_hosts);
+    pub fn home(remote_hosts: Vec<HostTarget>, machine_groups: Vec<MachineGroup>) -> Self {
+        let mut app = Self::new(remote_hosts, machine_groups);
         app.view = View::Home;
         app
     }
@@ -184,16 +211,102 @@ impl App {
         self.hosts.clear();
         self.by_id.clear();
         self.selected = 0;
+        self.home_focus = HomeFocus::Groups;
+        self.home_nav_selected = 0;
         self.home_selected = 0;
+        self.home_notice = None;
         self.view = View::Home;
     }
 
     pub fn next_home_item(&mut self) {
-        self.home_selected = (self.home_selected + 1) % 3;
+        self.home_selected = (self.home_selected + 1) % self.home_item_count();
+        self.home_notice = None;
     }
 
     pub fn previous_home_item(&mut self) {
-        self.home_selected = self.home_selected.checked_sub(1).unwrap_or(2);
+        self.home_selected = self
+            .home_selected
+            .checked_sub(1)
+            .unwrap_or(self.home_item_count() - 1);
+        self.home_notice = None;
+    }
+
+    pub fn home_item_count(&self) -> usize {
+        self.machine_groups.len() + 2
+    }
+
+    pub fn toggle_home_focus(&mut self) {
+        self.home_focus = match self.home_focus {
+            HomeFocus::Navigation => HomeFocus::Groups,
+            HomeFocus::Groups => HomeFocus::Navigation,
+        };
+        self.home_notice = None;
+    }
+
+    pub fn next_home_nav(&mut self) {
+        self.home_nav_selected = (self.home_nav_selected + 1) % 3;
+    }
+
+    pub fn previous_home_nav(&mut self) {
+        self.home_nav_selected = self.home_nav_selected.checked_sub(1).unwrap_or(2);
+    }
+
+    pub fn begin_group_creation(&mut self) {
+        self.group_draft.clear();
+        self.group_error = None;
+        self.view = View::CreateGroup;
+    }
+
+    pub fn push_group_character(&mut self, character: char) {
+        if self.group_draft.chars().count() < 32 && !character.is_control() {
+            self.group_draft.push(character);
+            self.group_error = None;
+        }
+    }
+
+    pub fn pop_group_character(&mut self) {
+        self.group_draft.pop();
+        self.group_error = None;
+    }
+
+    pub fn cancel_group_creation(&mut self) {
+        self.group_draft.clear();
+        self.group_error = None;
+        self.view = View::Home;
+    }
+
+    pub fn create_group(&mut self) -> Result<(), String> {
+        let name = self.group_draft.trim();
+        if name.is_empty() {
+            let message = "Give this group a name.".to_owned();
+            self.group_error = Some(message.clone());
+            return Err(message);
+        }
+        if self
+            .machine_groups
+            .iter()
+            .any(|group| group.name.eq_ignore_ascii_case(name))
+        {
+            let message = "A group with this name already exists.".to_owned();
+            self.group_error = Some(message.clone());
+            return Err(message);
+        }
+        self.machine_groups
+            .push(MachineGroup::empty(name.to_owned()));
+        self.home_selected = self.machine_groups.len();
+        self.group_draft.clear();
+        self.group_error = None;
+        self.home_notice = Some("Group created. Add machines from Machines.".into());
+        self.view = View::Home;
+        Ok(())
+    }
+
+    pub fn show_empty_group_notice(&mut self) {
+        self.home_notice = Some("This group is empty. Add machines from Machines.".into());
+    }
+
+    pub fn show_home_notice(&mut self, message: String) {
+        self.home_notice = Some(message);
     }
 
     pub fn open_settings(&mut self) {
@@ -300,7 +413,7 @@ mod tests {
 
     #[test]
     fn setup_progress_animates_toward_target() {
-        let mut app = App::new(Vec::new());
+        let mut app = App::new(Vec::new(), Vec::new());
         app.start_agent_setup();
         app.update_agent_setup(70, "Validating metrics".into());
         app.advance_animation();
@@ -310,7 +423,7 @@ mod tests {
 
     #[test]
     fn agent_confirmation_defaults_to_no() {
-        let mut app = App::new(Vec::new());
+        let mut app = App::new(Vec::new(), Vec::new());
         app.open_agent_confirmation();
         assert_eq!(app.agent_confirm_selected, 1);
         app.toggle_agent_confirmation();
@@ -319,12 +432,25 @@ mod tests {
 
     #[test]
     fn home_menu_wraps_and_opens_after_setup() {
-        let mut app = App::new(Vec::new());
+        let mut app = App::new(Vec::new(), Vec::new());
         app.open_home();
         assert_eq!(app.view, View::Home);
         app.previous_home_item();
-        assert_eq!(app.home_selected, 2);
+        assert_eq!(app.home_selected, 1);
         app.next_home_item();
         assert_eq!(app.home_selected, 0);
+    }
+
+    #[test]
+    fn creates_named_machine_groups() {
+        let mut app = App::home(Vec::new(), Vec::new());
+        app.begin_group_creation();
+        for character in "Production".chars() {
+            app.push_group_character(character);
+        }
+        app.create_group().unwrap();
+        assert_eq!(app.machine_groups[0].name, "Production");
+        assert_eq!(app.view, View::Home);
+        assert_eq!(app.home_selected, 1);
     }
 }

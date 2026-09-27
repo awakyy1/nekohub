@@ -39,10 +39,12 @@ cargo run -p nekohub-tui --bin nekohub -- --once --local --agent-socket /tmp/nek
 
 On first launch, choose **Monitor this machine** and confirm the one-time agent
 setup. nekoHub displays a restrained progress screen, validates real Linux
-metrics, and opens the main machine-space menu. Later launches return directly
-to this menu, where **This machine** is always first, followed by the remote
-fleet and Settings. If the service is unavailable, setup pauses with recovery
-commands and does not mark onboarding as complete.
+metrics, and opens the main application. Later launches return directly to the
+same persistent shell, with global Home, Machines, and Settings navigation.
+**This machine** is always the first group; additional groups can be created
+from the card grid and are stored in `~/.config/nekohub/machine-groups.json`.
+If the service is unavailable, setup pauses with recovery commands and does not
+mark onboarding as complete.
 
 The remote picker already discovers aliases in `~/.ssh/config`; secure remote
 agent pairing is the next milestone, and SSH metric collection is disabled.
@@ -71,7 +73,7 @@ it with `systemctl status nekohub-agent`.
 Alternatively, install downloaded builds directly:
 
 ```bash
-sudo apt install ./nekohub-agent_0.2.2_amd64.deb ./nekohub_0.2.2_amd64.deb
+sudo apt install ./nekohub-agent_0.3.0_amd64.deb ./nekohub_0.3.0_amd64.deb
 nekohub
 ```
 

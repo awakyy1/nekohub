@@ -14,7 +14,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap},
 };
 
-use crate::app::{App, HostState, View};
+use crate::app::{App, HomeFocus, HostState, View};
 
 const AMBER: Color = Color::Rgb(103, 199, 255);
 const ORANGE: Color = Color::Rgb(181, 140, 255);
@@ -44,6 +44,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             render_home(frame, frame.area(), app);
             return;
         }
+        View::CreateGroup => {
+            render_home(frame, frame.area(), app);
+            render_create_group(frame, frame.area(), app);
+            return;
+        }
         View::RemotePicker => {
             render_remote_picker(frame, frame.area(), app);
             return;
@@ -54,28 +59,31 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         }
         View::Overview | View::Detail => {}
     }
-    let shell = Layout::default()
+    let content = render_app_chrome(
+        frame,
+        frame.area(),
+        app,
+        0,
+        "Esc home  ·  r refresh  ·  m machines  ·  s settings  ·  q quit",
+    );
+    let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(1),
-        ])
-        .split(frame.area());
-    render_header(frame, shell[0], app);
+        .constraints([Constraint::Length(3), Constraint::Min(10)])
+        .split(content);
+    render_monitoring_bar(frame, sections[0], app);
     match app.view {
-        View::Overview => render_overview(frame, shell[1], app),
-        View::Detail => render_detail(frame, shell[1], app.selected()),
+        View::Overview => render_overview(frame, sections[1], app),
+        View::Detail => render_detail(frame, sections[1], app.selected()),
         View::Welcome
         | View::AgentConfirm
         | View::AgentSetup
         | View::Home
+        | View::CreateGroup
         | View::RemotePicker
         | View::Settings => {
             unreachable!("setup views return before shell render")
         }
     }
-    render_footer(frame, shell[2], app.view);
 }
 
 fn render_agent_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -141,173 +149,346 @@ fn render_agent_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let outer = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" nekoHub ", Style::default().fg(INK).bg(AMBER).bold()),
-            Span::styled(" HOME ", Style::default().fg(DIM)),
-        ]))
-        .title_bottom(
-            Line::from(" ↑↓ choose  ·  Enter open  ·  q quit ")
-                .style(Style::default().fg(DIM))
-                .centered(),
-        )
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(DIM));
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
-
-    let width = inner.width.min(78);
-    let height = inner.height.min(22);
-    let content = Rect::new(
-        inner.x + inner.width.saturating_sub(width) / 2,
-        inner.y + inner.height.saturating_sub(height) / 2,
-        width,
-        height,
+    let content = render_app_chrome(
+        frame,
+        area,
+        app,
+        0,
+        "Tab header/cards  ·  ←→ browse  ·  Enter open  ·  m machines  ·  s settings  ·  q quit",
     );
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
-            Constraint::Length(4),
-            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Min(8),
             Constraint::Length(1),
-            Constraint::Length(4),
-            Constraint::Min(1),
         ])
         .split(content);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled("Choose a machine space", Style::default().fg(TEXT).bold()),
-            Line::from(""),
+            Line::styled("Your machine groups", Style::default().fg(TEXT).bold()),
             Line::styled(
-                "Start local, open a fleet, or adjust how nekoHub behaves.",
+                "Keep related machines together. This machine always has its own space.",
                 Style::default().fg(DIM),
             ),
         ]),
         rows[0],
     );
+    render_group_grid(frame, rows[1], app);
+    if let Some(notice) = app.home_notice.as_deref() {
+        frame.render_widget(
+            Paragraph::new(notice)
+                .style(Style::default().fg(ORANGE))
+                .alignment(Alignment::Center),
+            rows[2],
+        );
+    }
+}
 
-    let live = if app.animation_tick % 16 < 8 {
-        "● READY"
-    } else {
-        "• READY"
-    };
-    render_home_item(
-        frame,
-        rows[1],
-        "This machine",
-        "Local agent · 1 host",
-        live,
-        app.home_selected == 0,
-        GREEN,
-    );
-    let remote_count = app.remote_hosts.len();
-    render_home_item(
-        frame,
-        rows[2],
-        "Remote fleet",
-        &format!("SSH inventory · {remote_count} discovered"),
-        if remote_count == 0 {
-            "EMPTY"
-        } else {
-            "PAIRING NEEDED"
-        },
-        app.home_selected == 1,
-        ORANGE,
-    );
+fn render_app_chrome(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    active_nav: usize,
+    footer: &str,
+) -> Rect {
+    let outer = Block::default()
+        .title_bottom(
+            Line::from(format!(" {footer} "))
+                .style(Style::default().fg(DIM))
+                .centered(),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(43, 64, 82)));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(8),
+        ])
+        .split(inner);
+    render_home_header(frame, rows[0], app, active_nav);
+    render_machine_strip(frame, rows[1], app);
+    rows[3]
+}
+
+fn render_home_header(frame: &mut Frame<'_>, area: Rect, app: &App, active_nav: usize) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .split(area);
     frame.render_widget(
-        Paragraph::new("SYSTEM").style(Style::default().fg(DIM).bold()),
-        rows[3],
+        Paragraph::new(Line::from(vec![
+            Span::styled("  (^._.^)  ", Style::default().fg(ORANGE).bold()),
+            Span::styled("neko", Style::default().fg(TEXT).bold()),
+            Span::styled("Hub", Style::default().fg(AMBER).bold()),
+        ])),
+        columns[0],
     );
-    render_home_item(
-        frame,
-        rows[4],
-        "Settings",
-        "Appearance, agents, data and preferences",
-        "OPEN",
-        app.home_selected == 2,
-        CYAN,
+    let buttons = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+        ])
+        .split(columns[1]);
+    for (index, (label, shortcut)) in [("Home", "1"), ("Machines", "2"), ("Settings", "3")]
+        .into_iter()
+        .enumerate()
+    {
+        let focused = app.view == View::Home
+            && app.home_focus == HomeFocus::Navigation
+            && app.home_nav_selected == index;
+        let active = index == active_nav;
+        let color = if focused || active { AMBER } else { DIM };
+        let style = if focused {
+            Style::default().fg(INK).bg(AMBER).bold()
+        } else {
+            Style::default().fg(color).bold()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!(" {shortcut} "), Style::default().fg(ORANGE).bold()),
+                Span::styled(label, style),
+            ]))
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(color)),
+            ),
+            buttons[index],
+        );
+    }
+}
+
+fn render_machine_strip(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let mut spans = vec![
+        Span::styled(" ● ", Style::default().fg(GREEN)),
+        Span::styled("This machine", Style::default().fg(TEXT).bold()),
+    ];
+    for host in &app.remote_hosts {
+        spans.push(Span::styled("    ○ ", Style::default().fg(DIM)));
+        spans.push(Span::styled(
+            host.display_name.clone(),
+            Style::default().fg(Color::Gray),
+        ));
+    }
+    if app.remote_hosts.is_empty() {
+        spans.push(Span::styled(
+            "    No remote machines paired yet",
+            Style::default().fg(DIM),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).block(
+            Block::default()
+                .title(Line::styled(
+                    format!(" ALL MACHINES  {} ", app.remote_hosts.len() + 1),
+                    Style::default().fg(CYAN).bold(),
+                ))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Rgb(43, 64, 82))),
+        ),
+        area,
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_home_item(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    title: &str,
-    detail: &str,
-    status: &str,
-    selected: bool,
-    status_color: Color,
-) {
-    let border = if selected { AMBER } else { DIM };
-    let title_color = if selected { TEXT } else { Color::Gray };
+fn render_group_grid(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let columns = if area.width >= 120 {
+        4
+    } else if area.width >= 82 {
+        3
+    } else {
+        2
+    };
+    let visible_rows = usize::from((area.height / 8).max(1));
+    let capacity = columns * visible_rows;
+    let selected_page = app.home_selected / capacity;
+    let first = selected_page * capacity;
+    let last = (first + capacity).min(app.home_item_count());
+    let row_count = (last - first).div_ceil(columns).max(1);
+    let row_areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(vec![Constraint::Ratio(1, row_count as u32); row_count])
+        .spacing(1)
+        .split(area);
+    for row in 0..row_count {
+        let column_areas = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![Constraint::Ratio(1, columns as u32); columns])
+            .spacing(2)
+            .split(row_areas[row]);
+        for (column, card_area) in column_areas.iter().enumerate() {
+            let index = first + row * columns + column;
+            if index >= last {
+                break;
+            }
+            render_group_card(frame, *card_area, app, index);
+        }
+    }
+}
+
+fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize) {
+    let selected = app.home_focus == HomeFocus::Groups && app.home_selected == index;
+    let is_add = index + 1 == app.home_item_count();
+    let (title, count, state, accent) = if index == 0 {
+        (
+            "This machine".to_owned(),
+            "1 machine".to_owned(),
+            "● LOCAL READY".to_owned(),
+            GREEN,
+        )
+    } else if is_add {
+        (
+            "New group".to_owned(),
+            "Create a space".to_owned(),
+            "ENTER TO ADD".to_owned(),
+            ORANGE,
+        )
+    } else {
+        let group = &app.machine_groups[index - 1];
+        let count = group.host_ids.len();
+        (
+            group.name.clone(),
+            format!("{count} machine{}", if count == 1 { "" } else { "s" }),
+            if count == 0 {
+                "○ EMPTY GROUP".to_owned()
+            } else {
+                "● GROUP READY".to_owned()
+            },
+            [AMBER, CYAN, ORANGE][(index - 1) % 3],
+        )
+    };
+    let border = if selected {
+        accent
+    } else {
+        Color::Rgb(43, 64, 82)
+    };
+    let marker = if is_add { "+" } else { "◆" };
     let block = Block::default()
+        .title(Line::styled(
+            format!(" {:02} ", index + 1),
+            Style::default()
+                .fg(if selected { accent } else { DIM })
+                .bold(),
+        ))
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(if selected {
+            BorderType::Thick
+        } else {
+            BorderType::Rounded
+        })
         .border_style(Style::default().fg(border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
-                Span::styled(
-                    if selected { "  ›  " } else { "     " },
-                    Style::default().fg(AMBER).bold(),
-                ),
-                Span::styled(title.to_owned(), Style::default().fg(title_color).bold()),
+                Span::styled(format!(" {marker}  "), Style::default().fg(accent).bold()),
+                Span::styled(title, Style::default().fg(TEXT).bold()),
             ]),
-            Line::from(vec![
-                Span::raw("     "),
-                Span::styled(detail.to_owned(), Style::default().fg(DIM)),
-            ]),
-        ]),
+            Line::from(""),
+            Line::styled(format!("    {count}"), Style::default().fg(Color::Gray)),
+            Line::styled(format!("    {state}"), Style::default().fg(accent).bold()),
+        ])
+        .wrap(Wrap { trim: true }),
         inner,
     );
-    let status_width = status.chars().count() as u16 + 2;
-    if status_width < inner.width {
-        let status_area = Rect::new(
-            inner.right().saturating_sub(status_width),
-            inner.y,
-            status_width,
-            1,
-        );
+}
+
+fn render_create_group(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(62);
+    let height = area.height.min(14);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" (^._.^) ", Style::default().fg(ORANGE).bold()),
+            Span::styled(" NEW MACHINE GROUP ", Style::default().fg(TEXT).bold()),
+        ]))
+        .title_bottom(Line::from(" Enter create  ·  Esc cancel ").centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(ORANGE));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Min(2),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                "Create a friendly home for machines that belong together.",
+                Style::default().fg(TEXT),
+            ),
+            Line::from(""),
+            Line::styled(
+                "You can add and reorganize machines later.",
+                Style::default().fg(DIM),
+            ),
+        ])
+        .alignment(Alignment::Center),
+        rows[0],
+    );
+    let cursor = if app.animation_tick % 10 < 5 {
+        "_"
+    } else {
+        " "
+    };
+    frame.render_widget(
+        Paragraph::new(format!(" {}{cursor}", app.group_draft)).block(
+            Block::default()
+                .title(" Group name ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(AMBER)),
+        ),
+        rows[1],
+    );
+    if let Some(error) = app.group_error.as_deref() {
         frame.render_widget(
-            Paragraph::new(status.to_owned()).style(Style::default().fg(status_color).bold()),
-            status_area,
+            Paragraph::new(error)
+                .style(Style::default().fg(RED))
+                .alignment(Alignment::Center),
+            rows[2],
         );
     }
 }
 
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let outer = Block::default()
-        .title(Line::from(vec![
-            Span::styled(" nekoHub ", Style::default().fg(INK).bg(AMBER).bold()),
-            Span::styled(" SETTINGS ", Style::default().fg(DIM)),
-        ]))
-        .title_bottom(
-            Line::from(" Esc return to menu  ·  q quit ")
-                .style(Style::default().fg(DIM))
-                .centered(),
-        )
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(DIM));
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
+    let inner = render_app_chrome(frame, area, app, 2, "Esc home  ·  m machines  ·  q quit");
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(5), Constraint::Min(12)])
         .split(inner);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled("Settings foundation", Style::default().fg(TEXT).bold()),
+            Line::styled("Settings", Style::default().fg(TEXT).bold()),
             Line::from(""),
             Line::styled(
-                "These sections will become configurable as the product grows.",
+                "Control how nekoHub looks, connects and keeps data.",
                 Style::default().fg(DIM),
             ),
-        ])
-        .alignment(Alignment::Center),
+        ]),
         rows[0],
     );
     let columns = Layout::default()
@@ -608,26 +789,28 @@ fn render_welcome_button(frame: &mut Frame<'_>, area: Rect, label: &str, selecte
 }
 
 fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let outer = Block::default()
-        .title(Line::styled(
-            " REMOTE MACHINE ",
-            Style::default().fg(AMBER).bold(),
-        ))
-        .title_bottom(
-            Line::from(" ↑↓ select  ·  Enter agent setup  ·  Esc back  ·  q quit ").centered(),
-        )
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(AMBER));
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
-    let width = inner.width.min(64);
-    let height = (app.remote_hosts.len() as u16 + 4).min(inner.height).max(7);
-    let panel = Rect::new(
-        inner.x + inner.width.saturating_sub(width) / 2,
-        inner.y + inner.height.saturating_sub(height) / 2,
-        width,
-        height,
+    let inner = render_app_chrome(
+        frame,
+        area,
+        app,
+        1,
+        "↑↓ select  ·  Enter inspect  ·  Esc home  ·  s settings  ·  q quit",
     );
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(7)])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Machines", Style::default().fg(TEXT).bold()),
+            Line::styled(
+                "All discovered machines live here before you organize them into groups.",
+                Style::default().fg(DIM),
+            ),
+        ]),
+        rows[0],
+    );
+    let panel = rows[1];
     if let Some(notice) = &app.remote_notice {
         frame.render_widget(
             Paragraph::new(vec![
@@ -675,48 +858,41 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(table, panel);
 }
 
-fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let mut line = vec![
-        Span::styled(" nekoHub ", Style::default().fg(INK).bg(AMBER).bold()),
-        Span::styled("  /  ", Style::default().fg(DIM)),
-        Span::styled(
-            app.selected()
-                .map_or("MACHINES", |host| host.target.display_name.as_str()),
-            Style::default().fg(TEXT).bold(),
-        ),
-        Span::raw("   "),
-    ];
-    for (label, view) in [("OVERVIEW", View::Overview), ("DETAILS", View::Detail)] {
-        let style = if app.view == view {
-            Style::default().fg(AMBER).bold()
-        } else {
-            Style::default().fg(DIM)
-        };
-        line.push(Span::styled(format!(" {label} "), style));
-        line.push(Span::raw(" "));
-    }
-    let header = Paragraph::new(Line::from(line)).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(DIM)),
-    );
-    frame.render_widget(header, area);
-
-    let status = if app.online_count() == app.hosts.len() && !app.hosts.is_empty() {
-        "● LIVE ".to_owned()
-    } else {
-        "○ CONNECTING ".to_owned()
-    };
-    let width = status.chars().count() as u16;
-    let status_area = Rect::new(area.right().saturating_sub(width + 1), area.y + 1, width, 1);
-    let color = if app.online_count() == app.hosts.len() && !app.hosts.is_empty() {
-        GREEN
-    } else {
-        ORANGE
-    };
+fn render_monitoring_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let host_name = app
+        .selected()
+        .map_or("Machine", |host| host.target.display_name.as_str());
+    let live = app.online_count() == app.hosts.len() && !app.hosts.is_empty();
     frame.render_widget(
-        Paragraph::new(status).style(Style::default().fg(color).bold()),
-        status_area,
+        Paragraph::new(Line::from(vec![
+            Span::styled(host_name, Style::default().fg(TEXT).bold()),
+            Span::styled("    ", Style::default()),
+            Span::styled(
+                " Overview ",
+                if app.view == View::Overview {
+                    Style::default().fg(INK).bg(AMBER).bold()
+                } else {
+                    Style::default().fg(DIM)
+                },
+            ),
+            Span::styled("  Details ", Style::default().fg(DIM)),
+            Span::styled(
+                if live {
+                    "    ● LIVE"
+                } else {
+                    "    ○ CONNECTING"
+                },
+                Style::default()
+                    .fg(if live { GREEN } else { ORANGE })
+                    .bold(),
+            ),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::Rgb(43, 64, 82))),
+        ),
+        area,
     );
 }
 
@@ -1357,37 +1533,6 @@ fn render_metric_table(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
     frame.render_widget(table, area);
 }
 
-fn render_footer(frame: &mut Frame<'_>, area: Rect, view: View) {
-    let mut spans = Vec::new();
-    if view == View::Overview {
-        spans.extend([
-            key("Enter"),
-            Span::styled(" details   ", Style::default().fg(DIM)),
-            key("Esc"),
-            Span::styled(" menu   ", Style::default().fg(DIM)),
-        ]);
-    } else {
-        spans.extend([
-            key("Esc"),
-            Span::styled(" overview   ", Style::default().fg(DIM)),
-        ]);
-    }
-    spans.extend([
-        key("r"),
-        Span::styled(" refresh   ", Style::default().fg(DIM)),
-        key("q"),
-        Span::styled(" quit", Style::default().fg(DIM)),
-    ]);
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
-        area,
-    );
-}
-
-fn key(label: &'static str) -> Span<'static> {
-    Span::styled(format!(" {label} "), Style::default().fg(AMBER).bold())
-}
-
 fn sparkline_text(values: &std::collections::VecDeque<u64>, width: usize) -> String {
     const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let mut output = "░".repeat(width.saturating_sub(values.len().min(width)));
@@ -1462,6 +1607,10 @@ mod tests {
                 (0..8)
                     .map(|index| nekohub_core::HostTarget::from_alias(format!("host-{index}")))
                     .collect(),
+                vec![
+                    crate::groups::MachineGroup::empty("Production".into()),
+                    crate::groups::MachineGroup::empty("Home lab".into()),
+                ],
             );
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
@@ -1475,6 +1624,9 @@ mod tests {
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.open_home();
             terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.begin_group_creation();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.cancel_group_creation();
             app.open_settings();
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.start_monitoring(nekohub_core::HostTarget::from_alias("local"));
