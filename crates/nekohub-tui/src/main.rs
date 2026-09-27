@@ -519,21 +519,39 @@ async fn save_preferences(app: &mut App) {
 }
 
 async fn install_remote_agent(target: &str) -> Result<(), String> {
-    const REMOTE_INSTALL: &str = r"set -eu
+    const REMOTE_INSTALL: &str = r#"set -eu
+run_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    echo 'root access or sudo is required to install nekohub-agent' >&2
+    return 1
+  fi
+}
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo 'remote installation currently supports Debian and Ubuntu' >&2
+  exit 1
+fi
+if [ "$(dpkg --print-architecture)" != amd64 ]; then
+  echo 'the nekoHub APT repository currently supports amd64 machines' >&2
+  exit 1
+fi
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL https://awakyy1.github.io/nekohub/install.sh | sudo sh
+  curl -fsSL https://awakyy1.github.io/nekohub/install.sh | run_root sh
 elif command -v wget >/dev/null 2>&1; then
-  wget -qO- https://awakyy1.github.io/nekohub/install.sh | sudo sh
+  wget -qO- https://awakyy1.github.io/nekohub/install.sh | run_root sh
 else
   echo 'curl or wget is required to install the nekoHub repository' >&2
   exit 1
 fi
-sudo apt-get install -y nekohub-agent
+run_root apt-get install -y nekohub-agent
 if command -v systemctl >/dev/null 2>&1; then
-  sudo systemctl enable --now nekohub-agent.service
-  sudo systemctl is-active --quiet nekohub-agent.service
+  run_root systemctl enable --now nekohub-agent.service
+  run_root systemctl is-active --quiet nekohub-agent.service
 fi
-echo 'nekoHub agent is ready.'";
+echo 'nekoHub agent is ready.'"#;
 
     println!("\nConnecting to {target}…");
     println!("SSH or sudo may ask for a password. nekoHub never stores it.\n");

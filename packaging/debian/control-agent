@@ -1,5 +1,5 @@
 Package: nekohub-agent
-Version: 0.6.0
+Version: 0.7.0
 Section: admin
 Priority: optional
 Architecture: amd64

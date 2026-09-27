@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "nekohub-agent"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -851,7 +851,7 @@ dependencies = [
 
 [[package]]
 name = "nekohub-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "glob",
@@ -862,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "nekohub-ssh"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "nekohub-core",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "nekohub-tui"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "clap",

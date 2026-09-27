@@ -25,6 +25,9 @@ This repository is the architectural seed and first executable vertical slice:
   OpenSSH host;
 - collects the current Linux machine through `nekohub-agent` without SSH;
 - presents concrete aliases from `~/.ssh/config` in the remote picker.
+- installs and starts the signed `nekohub-agent` package on remote Debian and
+  Ubuntu amd64 machines through an interactive OpenSSH session;
+- persists four accent themes and three interface-lettering profiles.
 
 ## Run
 
@@ -46,8 +49,11 @@ from the card grid and are stored in `~/.config/nekohub/machine-groups.json`.
 If the service is unavailable, setup pauses with recovery commands and does not
 mark onboarding as complete.
 
-The remote picker already discovers aliases in `~/.ssh/config`; secure remote
-agent pairing is the next milestone, and SSH metric collection is disabled.
+The Machines screen discovers aliases in `~/.ssh/config` and can install the
+agent by asking for an SSH destination such as `ops@edge-01`. Host-key checks,
+SSH passwords, and `sudo` prompts remain under OpenSSH's control and are never
+stored by nekoHub. Secure metric pairing is the next milestone; SSH metric
+collection remains disabled.
 
 Keys: `j`/`k` or arrows move, `Enter` selects, `Esc` goes back, `r` refreshes,
 and `q` quits.
@@ -73,7 +79,7 @@ it with `systemctl status nekohub-agent`.
 Alternatively, install downloaded builds directly:
 
 ```bash
-sudo apt install ./nekohub-agent_0.6.0_amd64.deb ./nekohub_0.6.0_amd64.deb
+sudo apt install ./nekohub-agent_0.7.0_amd64.deb ./nekohub_0.7.0_amd64.deb
 nekohub
 ```
 

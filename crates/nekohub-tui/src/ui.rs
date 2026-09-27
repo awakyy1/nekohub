@@ -1355,7 +1355,7 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(
-                "Connect to a Debian or Ubuntu machine over SSH.",
+                "Connect to a Debian or Ubuntu amd64 machine over SSH.",
                 Style::default().fg(TEXT).bold(),
             ),
             Line::from(""),
