@@ -209,18 +209,38 @@ fn render_app_chrome(
 fn render_home_header(frame: &mut Frame<'_>, area: Rect, app: &App, active_nav: usize) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(28), Constraint::Min(45)])
+        .constraints([Constraint::Length(43), Constraint::Min(45)])
         .split(area);
-    let logo = vec![
-        Line::styled("    /\\          /\\", Style::default().fg(AMBER).bold()),
-        Line::styled("   /  \\________/  \\", Style::default().fg(AMBER)),
-        Line::from(vec![
-            Span::styled("  |     ", Style::default().fg(AMBER)),
+    let logo = if columns[0].width >= 43 {
+        vec![
+            Line::from(vec![
+                Span::styled(" /\\", Style::default().fg(AMBER).bold()),
+                Span::styled(
+                    "        __        __ __     __",
+                    Style::default().fg(TEXT).bold(),
+                ),
+                Span::styled(" /\\", Style::default().fg(AMBER).bold()),
+            ]),
+            Line::styled(
+                "  ___  ___ / /_____  / // /_ __/ /",
+                Style::default().fg(TEXT).bold(),
+            ),
+            Line::styled(
+                " / _ \\/ -_)  '_/ _ \\/ _  / // / _ \\",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::styled(
+                "/_//_/\\__/_/\\_\\\\___/_//_/\\_,_/_.__/",
+                Style::default().fg(AMBER),
+            ),
+        ]
+    } else {
+        vec![Line::from(vec![
+            Span::styled("/\\ ", Style::default().fg(AMBER).bold()),
             Span::styled("nekoHub", Style::default().fg(TEXT).bold()),
-            Span::styled("     |", Style::default().fg(AMBER)),
-        ]),
-        Line::styled("   \\______________/", Style::default().fg(AMBER)),
-    ];
+            Span::styled(" /\\", Style::default().fg(AMBER).bold()),
+        ])]
+    };
     frame.render_widget(Paragraph::new(logo), columns[0]);
     let nav_area = Rect::new(
         columns[1].x,
@@ -385,22 +405,27 @@ fn render_add_group_button(frame: &mut Frame<'_>, area: Rect, app: &App, selecte
     if area.width < 2 || area.height < 2 {
         return;
     }
-    let horizontal = "┈".repeat(usize::from(area.width.saturating_sub(2)));
+    let horizontal = (0..area.width.saturating_sub(2))
+        .map(|index| if index % 2 == 0 { '-' } else { ' ' })
+        .collect::<String>();
     frame.render_widget(
-        Paragraph::new(format!("┌{horizontal}┐")).style(Style::default().fg(color)),
+        Paragraph::new(format!("+{horizontal}+")).style(Style::default().fg(color)),
         Rect::new(area.x, area.y, area.width, 1),
     );
     frame.render_widget(
-        Paragraph::new(format!("└{horizontal}┘")).style(Style::default().fg(color)),
+        Paragraph::new(format!("+{horizontal}+")).style(Style::default().fg(color)),
         Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
     );
-    for y in area.y.saturating_add(1)..area.bottom().saturating_sub(1) {
+    for (offset, y) in (area.y.saturating_add(1)..area.bottom().saturating_sub(1)).enumerate() {
+        if offset % 2 != 0 {
+            continue;
+        }
         frame.render_widget(
-            Paragraph::new("┊").style(Style::default().fg(color)),
+            Paragraph::new("|").style(Style::default().fg(color)),
             Rect::new(area.x, y, 1, 1),
         );
         frame.render_widget(
-            Paragraph::new("┊").style(Style::default().fg(color)),
+            Paragraph::new("|").style(Style::default().fg(color)),
             Rect::new(area.right().saturating_sub(1), y, 1, 1),
         );
     }
@@ -410,6 +435,13 @@ fn render_add_group_button(frame: &mut Frame<'_>, area: Rect, app: &App, selecte
         area.width.saturating_sub(2),
         area.height.saturating_sub(2),
     );
+    let content_height = inner.height.min(3);
+    let content = Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(content_height) / 2,
+        inner.width,
+        content_height,
+    );
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
@@ -417,12 +449,11 @@ fn render_add_group_button(frame: &mut Frame<'_>, area: Rect, app: &App, selecte
                 Span::styled("New group", Style::default().fg(TEXT).bold()),
             ]),
             Line::styled("Create a machine group", Style::default().fg(DIM)),
-            Line::from(""),
             Line::styled("Enter to add", Style::default().fg(color)),
         ])
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true }),
-        inner,
+        content,
     );
 }
 
