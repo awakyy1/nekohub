@@ -16,14 +16,16 @@ use ratatui::{
 
 use crate::app::{App, HomeFocus, HostState, View};
 
-const AMBER: Color = Color::Rgb(103, 199, 255);
-const ORANGE: Color = Color::Rgb(181, 140, 255);
-const DIM: Color = Color::Rgb(70, 91, 111);
-const GREEN: Color = Color::Rgb(102, 226, 178);
-const RED: Color = Color::Rgb(255, 74, 74);
-const CYAN: Color = Color::Rgb(112, 220, 232);
-const INK: Color = Color::Rgb(15, 24, 33);
-const TEXT: Color = Color::Rgb(214, 226, 238);
+const AMBER: Color = Color::Rgb(126, 213, 177);
+const ORANGE: Color = Color::Rgb(216, 184, 122);
+const DIM: Color = Color::Rgb(91, 108, 101);
+const GREEN: Color = Color::Rgb(113, 221, 175);
+const RED: Color = Color::Rgb(224, 112, 112);
+const CYAN: Color = Color::Rgb(135, 164, 215);
+const INK: Color = Color::Rgb(11, 16, 14);
+const SURFACE: Color = Color::Rgb(16, 23, 20);
+const LINE: Color = Color::Rgb(43, 56, 51);
+const TEXT: Color = Color::Rgb(215, 224, 219);
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     match app.view {
@@ -185,8 +187,9 @@ fn render_app_chrome(
                 .centered(),
         )
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Rgb(43, 64, 82)));
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(LINE))
+        .style(Style::default().bg(INK));
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
     let rows = Layout::default()
@@ -210,7 +213,7 @@ fn render_home_header(frame: &mut Frame<'_>, area: Rect, app: &App, active_nav: 
         .split(area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  (^._.^)  ", Style::default().fg(ORANGE).bold()),
+            Span::styled("  (^._.^)  ", Style::default().fg(AMBER).bold()),
             Span::styled("neko", Style::default().fg(TEXT).bold()),
             Span::styled("Hub", Style::default().fg(AMBER).bold()),
         ])),
@@ -240,14 +243,13 @@ fn render_home_header(frame: &mut Frame<'_>, area: Rect, app: &App, active_nav: 
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(format!(" {shortcut} "), Style::default().fg(ORANGE).bold()),
+                Span::styled(format!("[{shortcut}] "), Style::default().fg(DIM)),
                 Span::styled(label, style),
             ]))
             .alignment(Alignment::Center)
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
+                    .borders(Borders::BOTTOM)
                     .border_style(Style::default().fg(color)),
             ),
             buttons[index],
@@ -277,12 +279,11 @@ fn render_machine_strip(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(Line::from(spans)).block(
             Block::default()
                 .title(Line::styled(
-                    format!(" ALL MACHINES  {} ", app.remote_hosts.len() + 1),
+                    format!(" machines  {} ", app.remote_hosts.len() + 1),
                     Style::default().fg(CYAN).bold(),
                 ))
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Rgb(43, 64, 82))),
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(LINE)),
         ),
         area,
     );
@@ -325,14 +326,14 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
         (
             "This machine".to_owned(),
             "1 machine".to_owned(),
-            "● LOCAL READY".to_owned(),
+            "● local · ready".to_owned(),
             GREEN,
         )
     } else if is_add {
         (
             "New group".to_owned(),
-            "Create a space".to_owned(),
-            "ENTER TO ADD".to_owned(),
+            "Create a machine group".to_owned(),
+            "Enter to add".to_owned(),
             ORANGE,
         )
     } else {
@@ -342,33 +343,20 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
             group.name.clone(),
             format!("{count} machine{}", if count == 1 { "" } else { "s" }),
             if count == 0 {
-                "○ EMPTY GROUP".to_owned()
+                "○ empty group".to_owned()
             } else {
-                "● GROUP READY".to_owned()
+                "● group ready".to_owned()
             },
             [AMBER, CYAN, ORANGE][(index - 1) % 3],
         )
     };
-    let border = if selected {
-        accent
-    } else {
-        Color::Rgb(43, 64, 82)
-    };
+    let border = if selected { accent } else { LINE };
     let marker = if is_add { "+" } else { "◆" };
     let block = Block::default()
-        .title(Line::styled(
-            format!(" {:02} ", index + 1),
-            Style::default()
-                .fg(if selected { accent } else { DIM })
-                .bold(),
-        ))
         .borders(Borders::ALL)
-        .border_type(if selected {
-            BorderType::Thick
-        } else {
-            BorderType::Rounded
-        })
-        .border_style(Style::default().fg(border));
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(border))
+        .style(Style::default().bg(if selected { SURFACE } else { INK }));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(
@@ -377,9 +365,9 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
                 Span::styled(format!(" {marker}  "), Style::default().fg(accent).bold()),
                 Span::styled(title, Style::default().fg(TEXT).bold()),
             ]),
+            Line::styled(format!("    {count}"), Style::default().fg(DIM)),
             Line::from(""),
-            Line::styled(format!("    {count}"), Style::default().fg(Color::Gray)),
-            Line::styled(format!("    {state}"), Style::default().fg(accent).bold()),
+            Line::styled(format!("    {state}"), Style::default().fg(accent)),
         ])
         .wrap(Wrap { trim: true }),
         inner,
@@ -817,7 +805,7 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         "This machine",
         "Local agent",
         "This machine",
-        "● READY",
+        "● ready",
     ])
     .style(if local_selected {
         Style::default().fg(INK).bg(AMBER).bold()
@@ -831,7 +819,7 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             host.display_name.as_str(),
             "SSH inventory",
             "Unassigned",
-            "○ PAIRING NEEDED",
+            "○ pairing needed",
         ])
         .style(if selected {
             Style::default().fg(INK).bg(AMBER).bold()
@@ -850,14 +838,14 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ],
     )
     .header(
-        Row::new(["", "MACHINE", "SOURCE", "GROUP", "STATUS"])
+        Row::new(["", "Machine", "Source", "Group", "Status"])
             .style(Style::default().fg(DIM).bold())
             .bottom_margin(1),
     )
     .block(
         Block::default()
             .title(format!(
-                " REGISTERED MACHINES  {} ",
+                " registered machines  {} ",
                 app.remote_hosts.len() + 1
             ))
             .borders(Borders::ALL)
@@ -886,9 +874,9 @@ fn render_monitoring_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::styled("  Details ", Style::default().fg(DIM)),
             Span::styled(
                 if live {
-                    "    ● LIVE"
+                    "    ● live"
                 } else {
-                    "    ○ CONNECTING"
+                    "    ○ connecting"
                 },
                 Style::default()
                     .fg(if live { GREEN } else { ORANGE })
@@ -906,7 +894,7 @@ fn render_monitoring_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_overview(frame: &mut Frame<'_>, area: Rect, app: &App) {
     if app.hosts.len() == 1 {
-        render_local_dashboard(frame, area, app.selected());
+        render_neko_dashboard(frame, area, app);
         return;
     }
     let summary_height = if area.height >= 24 { 8 } else { 6 };
@@ -918,6 +906,223 @@ fn render_overview(frame: &mut Frame<'_>, area: Rect, app: &App) {
     render_host_grid(frame, rows[1], app);
 }
 
+#[allow(clippy::too_many_lines)]
+fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(24),
+            Constraint::Length(2),
+            Constraint::Min(40),
+        ])
+        .split(area);
+    render_monitor_sidebar(frame, columns[0], app);
+    let Some(host) = app.selected() else {
+        return;
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(5),
+            Constraint::Min(5),
+        ])
+        .split(columns[2]);
+    let snapshot = host.snapshot.as_ref();
+    let state_color = if host.last_error.is_some() {
+        RED
+    } else if snapshot.is_some() {
+        GREEN
+    } else {
+        ORANGE
+    };
+    let identity = snapshot.map_or_else(
+        || "Waiting for the first sample".to_owned(),
+        |sample| format!("{} · {}", sample.os, sample.kernel),
+    );
+    let hostname = snapshot.map_or(host.target.display_name.as_str(), |sample| {
+        sample.hostname.as_str()
+    });
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(hostname, Style::default().fg(TEXT).bold()),
+                Span::styled(
+                    if host.last_error.is_some() {
+                        "    (-._.-) offline"
+                    } else if snapshot.is_some() {
+                        "    (^._.^) healthy"
+                    } else {
+                        "    (^o_o^) collecting"
+                    },
+                    Style::default().fg(state_color),
+                ),
+            ]),
+            Line::styled(identity, Style::default().fg(DIM)),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(LINE)),
+        ),
+        rows[0],
+    );
+
+    let metrics = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+        ])
+        .spacing(2)
+        .split(rows[1]);
+    render_soft_metric(
+        frame,
+        metrics[0],
+        "Cpu",
+        snapshot.and_then(|sample| sample.cpu_percent),
+        snapshot.map_or("warming up".into(), |sample| {
+            format!("load {:.2}", sample.load[0])
+        }),
+        AMBER,
+    );
+    render_soft_metric(
+        frame,
+        metrics[1],
+        "Memory",
+        snapshot.and_then(|sample| sample.memory.percent()),
+        snapshot.map_or("waiting".into(), |sample| {
+            format!(
+                "{} / {}",
+                bytes(sample.memory.used),
+                bytes(sample.memory.total)
+            )
+        }),
+        CYAN,
+    );
+    render_soft_metric(
+        frame,
+        metrics[2],
+        "Root disk",
+        snapshot.and_then(|sample| sample.root_disk.percent()),
+        snapshot.map_or("waiting".into(), |sample| {
+            format!(
+                "{} / {}",
+                bytes(sample.root_disk.used),
+                bytes(sample.root_disk.total)
+            )
+        }),
+        GREEN,
+    );
+
+    let (receive, transmit, uptime) = snapshot.map_or_else(
+        || ("--".into(), "--".into(), "--".into()),
+        |sample| {
+            (
+                format!("{}/s", bytes(sample.network.read_per_sec as u64)),
+                format!("{}/s", bytes(sample.network.write_per_sec as u64)),
+                human_duration(Duration::from_secs(sample.uptime_secs)),
+            )
+        },
+    );
+    let history_width = usize::from(rows[2].width.saturating_sub(4)).clamp(12, 72);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("Network · latest sample", Style::default().fg(DIM)),
+                Span::styled(
+                    format!("    ↓ {receive}   ↑ {transmit}"),
+                    Style::default().fg(TEXT),
+                ),
+            ]),
+            Line::from(""),
+            Line::styled(
+                sparkline_text(&host.cpu_history, history_width),
+                Style::default().fg(CYAN),
+            ),
+            Line::styled(
+                format!("cpu activity · uptime {uptime}"),
+                Style::default().fg(DIM),
+            ),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(LINE)),
+        ),
+        rows[2],
+    );
+}
+
+fn render_monitor_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let mut lines = vec![
+        Line::styled("Groups", Style::default().fg(DIM)),
+        Line::styled("◆ This machine    1", Style::default().fg(AMBER).bold()),
+    ];
+    for group in app.machine_groups.iter().take(4) {
+        lines.push(Line::styled(
+            format!("◇ {:<14} {}", group.name, group.host_ids.len()),
+            Style::default().fg(Color::Gray),
+        ));
+    }
+    lines.extend([
+        Line::from(""),
+        Line::styled("Quick view", Style::default().fg(DIM)),
+        Line::styled("○ Alerts          0", Style::default().fg(Color::Gray)),
+        Line::styled("= Services        --", Style::default().fg(Color::Gray)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::RIGHT)
+                .border_style(Style::default().fg(LINE)),
+        ),
+        area,
+    );
+}
+
+fn render_soft_metric(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    value: Option<f64>,
+    detail: String,
+    color: Color,
+) {
+    let percent = value.unwrap_or_default().clamp(0.0, 100.0);
+    let display = value.map_or_else(|| "--".into(), |value| format!("{value:.0}%"));
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(label).style(Style::default().fg(DIM)),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(display).style(Style::default().fg(TEXT).bold()),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(detail).style(Style::default().fg(Color::Gray)),
+        rows[2],
+    );
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(Style::default().fg(color).bg(SURFACE))
+            .ratio(percent / 100.0)
+            .label(""),
+        rows[3],
+    );
+}
+
+#[allow(dead_code)]
 #[allow(clippy::too_many_lines)]
 fn render_local_dashboard(frame: &mut Frame<'_>, area: Rect, host: Option<&HostState>) {
     let Some(host) = host else {
