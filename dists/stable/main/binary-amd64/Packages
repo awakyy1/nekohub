@@ -100,6 +100,23 @@ Description: Linux fleet management designed for the terminal
  nekoHub is a terminal interface for monitoring Linux machines through the
  native nekoHub agent. OpenSSH remains available for inventory and operations.
 
+Package: nekohub
+Version: 0.4.0
+Architecture: amd64
+Maintainer: nekoHub contributors
+Depends: nekohub-agent (= 0.4.0), openssh-client
+Filename: pool/main/n/nekohub/nekohub_0.4.0_amd64.deb
+Size: 812744
+MD5sum: 5ea3ff179de224cb44aeaf5f6f7cab17
+SHA1: 78337e1943cf6c72f366413cd4c292777168ffbf
+SHA256: 2ce64fbd914de317fcac51585283e371e642f936a62ec774f9ae979add92d714
+Section: admin
+Priority: optional
+Homepage: https://github.com/awakyy1/nekohub
+Description: Linux fleet management designed for the terminal
+ nekoHub is a terminal interface for monitoring Linux machines through the
+ native nekoHub agent. OpenSSH remains available for inventory and operations.
+
 Package: nekohub-agent
 Version: 0.2.0
 Architecture: amd64
@@ -178,6 +195,23 @@ Size: 556856
 MD5sum: f72aed6b8bf121eca312028183489942
 SHA1: 1eb931518f26e7e56cb3b61e5a43c78c35603de2
 SHA256: bdc6cc79f2f2ffe41c20524a7d4b36fae4e16b30dbd6368b80b2389114a2c470
+Section: admin
+Priority: optional
+Homepage: https://github.com/awakyy1/nekohub
+Description: Native Linux metrics agent for nekoHub
+ A small read-only daemon that collects host metrics from procfs and sysfs,
+ serves the local nekoHub TUI, and exposes Prometheus-compatible metrics.
+
+Package: nekohub-agent
+Version: 0.4.0
+Architecture: amd64
+Maintainer: nekoHub contributors
+Depends: adduser, systemd
+Filename: pool/main/n/nekohub/nekohub-agent_0.4.0_amd64.deb
+Size: 556200
+MD5sum: dcf700479b76c48fa2c61d7871742184
+SHA1: e0492a42ba30f7ab214716147282183da262887d
+SHA256: 65d03a75c8b46a3d2cc8ecb1052be68e46f806e2e45fde1a52353c4813f05490
 Section: admin
 Priority: optional
 Homepage: https://github.com/awakyy1/nekohub
