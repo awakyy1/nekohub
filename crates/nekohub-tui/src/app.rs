@@ -58,6 +58,8 @@ pub struct App {
     pub home_nav_selected: usize,
     pub home_selected: usize,
     pub settings_selected: usize,
+    pub background_enabled: bool,
+    pub settings_notice: Option<String>,
     pub machine_groups: Vec<MachineGroup>,
     pub group_draft: String,
     pub group_error: Option<String>,
@@ -71,8 +73,6 @@ pub struct App {
     pub setup_visible_progress: u16,
     pub setup_message: String,
     pub setup_error: Option<String>,
-    tab_transition_started_at: Option<u64>,
-    tab_transition_direction: i8,
     remote_return_view: View,
     by_id: HashMap<String, usize>,
 }
@@ -90,6 +90,8 @@ impl App {
             home_nav_selected: 0,
             home_selected: 0,
             settings_selected: 0,
+            background_enabled: true,
+            settings_notice: None,
             machine_groups,
             group_draft: String::new(),
             group_error: None,
@@ -103,8 +105,6 @@ impl App {
             setup_visible_progress: 0,
             setup_message: String::new(),
             setup_error: None,
-            tab_transition_started_at: None,
-            tab_transition_direction: 1,
             remote_return_view: View::Welcome,
             by_id: HashMap::new(),
         }
@@ -128,6 +128,8 @@ impl App {
             home_nav_selected: 0,
             home_selected: 0,
             settings_selected: 0,
+            background_enabled: true,
+            settings_notice: None,
             machine_groups: Vec::new(),
             group_draft: String::new(),
             group_error: None,
@@ -141,8 +143,6 @@ impl App {
             setup_visible_progress: 0,
             setup_message: String::new(),
             setup_error: None,
-            tab_transition_started_at: None,
-            tab_transition_direction: 1,
             remote_return_view: View::Home,
             by_id,
         }
@@ -220,7 +220,6 @@ impl App {
     }
 
     pub fn open_home(&mut self) {
-        self.begin_tab_transition(View::Home);
         self.hosts.clear();
         self.by_id.clear();
         self.selected = 0;
@@ -323,16 +322,26 @@ impl App {
     }
 
     pub fn open_settings(&mut self) {
-        self.begin_tab_transition(View::Settings);
         self.view = View::Settings;
     }
 
     pub fn next_setting(&mut self) {
-        self.settings_selected = (self.settings_selected + 1) % 4;
+        self.settings_selected = (self.settings_selected + 1) % 5;
+        self.settings_notice = None;
     }
 
     pub fn previous_setting(&mut self) {
-        self.settings_selected = self.settings_selected.checked_sub(1).unwrap_or(3);
+        self.settings_selected = self.settings_selected.checked_sub(1).unwrap_or(4);
+        self.settings_notice = None;
+    }
+
+    pub fn toggle_background(&mut self) {
+        self.background_enabled = !self.background_enabled;
+        self.settings_notice = Some(if self.background_enabled {
+            "nekoHub background enabled.".into()
+        } else {
+            "Terminal transparency is now visible.".into()
+        });
     }
 
     pub fn open_agent_confirmation(&mut self) {
@@ -346,13 +355,11 @@ impl App {
 
     pub fn open_remote_picker(&mut self) {
         self.remote_return_view = self.view;
-        self.begin_tab_transition(View::RemotePicker);
         self.view = View::RemotePicker;
         self.remote_notice = None;
     }
 
     pub fn close_remote_picker(&mut self) {
-        self.begin_tab_transition(self.remote_return_view);
         self.view = self.remote_return_view;
         self.remote_notice = None;
     }
@@ -388,27 +395,6 @@ impl App {
         }
     }
 
-    pub fn tab_transition(&self) -> Option<(u64, i8)> {
-        let age = self
-            .animation_tick
-            .wrapping_sub(self.tab_transition_started_at?);
-        (age < 5).then_some((age, self.tab_transition_direction))
-    }
-
-    fn begin_tab_transition(&mut self, target: View) {
-        let Some(from) = navigation_index(self.view) else {
-            return;
-        };
-        let Some(to) = navigation_index(target) else {
-            return;
-        };
-        if from == to {
-            return;
-        }
-        self.tab_transition_started_at = Some(self.animation_tick);
-        self.tab_transition_direction = if to > from { 1 } else { -1 };
-    }
-
     pub fn toggle_welcome_choice(&mut self) {
         self.welcome_selected = 1 - self.welcome_selected;
         self.welcome_notice = None;
@@ -433,15 +419,6 @@ impl App {
 
     pub fn online_count(&self) -> usize {
         self.hosts.iter().filter(|host| host.is_online()).count()
-    }
-}
-
-fn navigation_index(view: View) -> Option<u8> {
-    match view {
-        View::Home | View::CreateGroup | View::Overview | View::Detail => Some(0),
-        View::RemotePicker => Some(1),
-        View::Settings => Some(2),
-        View::Welcome | View::AgentConfirm | View::AgentSetup => None,
     }
 }
 
@@ -527,18 +504,11 @@ mod tests {
     }
 
     #[test]
-    fn tab_transition_tracks_direction_and_finishes() {
+    fn appearance_background_can_be_toggled() {
         let mut app = App::home(Vec::new(), Vec::new());
-        app.open_settings();
-        assert_eq!(app.tab_transition(), Some((0, 1)));
-        app.advance_animation();
-        assert_eq!(app.tab_transition(), Some((1, 1)));
-        for _ in 0..4 {
-            app.advance_animation();
-        }
-        assert_eq!(app.tab_transition(), None);
-
-        app.open_home();
-        assert_eq!(app.tab_transition(), Some((0, -1)));
+        assert!(app.background_enabled);
+        app.toggle_background();
+        assert!(!app.background_enabled);
+        assert!(app.settings_notice.is_some());
     }
 }

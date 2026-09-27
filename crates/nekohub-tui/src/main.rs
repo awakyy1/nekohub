@@ -2,6 +2,7 @@ mod app;
 mod demo;
 mod groups;
 mod onboarding;
+mod preferences;
 mod terminal;
 mod ui;
 
@@ -201,11 +202,13 @@ async fn run_tui(
     let local: Arc<dyn Collector> = Arc::new(AgentCollector::new(agent_socket, timeout));
     let state_path = onboarding::state_path();
     let machine_groups = groups::load(&groups::state_path());
+    let preferences = preferences::load(&preferences::state_path());
     let mut app = if onboarding::is_complete(&state_path) {
         App::home(remote_hosts, machine_groups)
     } else {
         App::new(remote_hosts, machine_groups)
     };
+    app.background_enabled = preferences.background_enabled;
     run_event_loop(&mut app, None, Some(local), refresh_every, state_path).await
 }
 
@@ -412,6 +415,22 @@ async fn run_event_loop(
                         View::Settings => match key.code {
                             KeyCode::Down | KeyCode::Char('j') => app.next_setting(),
                             KeyCode::Up | KeyCode::Char('k') => app.previous_setting(),
+                            KeyCode::Enter | KeyCode::Char(' ')
+                                if app.settings_selected == 0 =>
+                            {
+                                app.toggle_background();
+                                let updated_preferences = preferences::Preferences {
+                                    background_enabled: app.background_enabled,
+                                };
+                                if let Err(message) = preferences::save(
+                                    &preferences::state_path(),
+                                    updated_preferences,
+                                )
+                                .await
+                                {
+                                    app.settings_notice = Some(message);
+                                }
+                            }
                             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.open_home(),
                             _ => {}
                         },

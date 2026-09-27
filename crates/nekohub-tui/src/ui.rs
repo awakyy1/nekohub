@@ -44,7 +44,6 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         }
         View::Home => {
             render_home(frame, frame.area(), app);
-            render_tab_transition(frame, frame.area(), app);
             return;
         }
         View::CreateGroup => {
@@ -54,12 +53,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         }
         View::RemotePicker => {
             render_remote_picker(frame, frame.area(), app);
-            render_tab_transition(frame, frame.area(), app);
             return;
         }
         View::Settings => {
             render_settings(frame, frame.area(), app);
-            render_tab_transition(frame, frame.area(), app);
             return;
         }
         View::Overview | View::Detail => {}
@@ -89,47 +86,6 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             unreachable!("setup views return before shell render")
         }
     }
-    render_tab_transition(frame, frame.area(), app);
-}
-
-fn render_tab_transition(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let Some((age, direction)) = app.tab_transition() else {
-        return;
-    };
-    let revealed = area.width.saturating_mul(age as u16) / 5;
-    let hidden = area.width.saturating_sub(revealed);
-    if hidden == 0 {
-        return;
-    }
-    let mask = if direction > 0 {
-        Rect::new(area.x.saturating_add(revealed), area.y, hidden, area.height)
-    } else {
-        Rect::new(area.x, area.y, hidden, area.height)
-    };
-    frame.render_widget(Clear, mask);
-    frame.render_widget(Block::default().style(Style::default().bg(INK)), mask);
-
-    let edge_x = if direction > 0 {
-        mask.x
-    } else {
-        mask.right().saturating_sub(2)
-    };
-    let edge = Rect::new(edge_x, area.y, 2.min(area.width), area.height);
-    let edge_line = if direction > 0 {
-        Line::from(vec![
-            Span::styled("▓", Style::default().fg(AMBER)),
-            Span::styled("░", Style::default().fg(DIM)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("░", Style::default().fg(DIM)),
-            Span::styled("▓", Style::default().fg(AMBER)),
-        ])
-    };
-    let scanline = std::iter::repeat_with(|| edge_line.clone())
-        .take(usize::from(area.height))
-        .collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(scanline), edge);
 }
 
 fn render_agent_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -233,7 +189,7 @@ fn render_app_chrome(
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(LINE))
-        .style(Style::default().bg(INK));
+        .style(canvas_style(app));
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
     let rows = Layout::default()
@@ -253,33 +209,18 @@ fn render_app_chrome(
 fn render_home_header(frame: &mut Frame<'_>, area: Rect, app: &App, active_nav: usize) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .constraints([Constraint::Length(28), Constraint::Min(45)])
         .split(area);
-    let logo = if columns[0].width >= 40 {
-        vec![
-            Line::from(vec![
-                Span::styled("  /\\_/\\", Style::default().fg(AMBER).bold()),
-                Span::styled("    _       _  _      _", Style::default().fg(DIM)),
-            ]),
-            Line::styled(
-                "  _ _  ___| |_____| || |_  _| |__",
-                Style::default().fg(TEXT).bold(),
-            ),
-            Line::styled(
-                " | ' \\/ -_) / / _ \\ __ | || | '_ \\",
-                Style::default().fg(Color::Gray),
-            ),
-            Line::styled(
-                " |_||_\\___|_\\_\\___/_||_|\\_,_|_.__/",
-                Style::default().fg(AMBER),
-            ),
-        ]
-    } else {
-        vec![Line::from(vec![
-            Span::styled(" /\\_/\\  ", Style::default().fg(AMBER).bold()),
+    let logo = vec![
+        Line::styled("    /\\          /\\", Style::default().fg(AMBER).bold()),
+        Line::styled("   /  \\________/  \\", Style::default().fg(AMBER)),
+        Line::from(vec![
+            Span::styled("  |     ", Style::default().fg(AMBER)),
             Span::styled("nekoHub", Style::default().fg(TEXT).bold()),
-        ])]
-    };
+            Span::styled("     |", Style::default().fg(AMBER)),
+        ]),
+        Line::styled("   \\______________/", Style::default().fg(AMBER)),
+    ];
     frame.render_widget(Paragraph::new(logo), columns[0]);
     let nav_area = Rect::new(
         columns[1].x,
@@ -420,7 +361,7 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(border))
-        .style(Style::default().bg(if selected { SURFACE } else { INK }));
+        .style(card_background(app, selected));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(
@@ -439,40 +380,66 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
 }
 
 fn render_add_group_button(frame: &mut Frame<'_>, area: Rect, app: &App, selected: bool) {
-    let width = area.width.min(16);
-    let height = area.height.min(6);
-    let button = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
     let color = if selected { ORANGE } else { DIM };
-    let pulse = if selected && app.animation_tick % 6 < 3 {
-        "✦"
-    } else {
-        "+"
-    };
+    frame.render_widget(Block::default().style(card_background(app, selected)), area);
+    if area.width < 2 || area.height < 2 {
+        return;
+    }
+    let horizontal = "┈".repeat(usize::from(area.width.saturating_sub(2)));
+    frame.render_widget(
+        Paragraph::new(format!("┌{horizontal}┐")).style(Style::default().fg(color)),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(format!("└{horizontal}┘")).style(Style::default().fg(color)),
+        Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+    );
+    for y in area.y.saturating_add(1)..area.bottom().saturating_sub(1) {
+        frame.render_widget(
+            Paragraph::new("┊").style(Style::default().fg(color)),
+            Rect::new(area.x, y, 1, 1),
+        );
+        frame.render_widget(
+            Paragraph::new("┊").style(Style::default().fg(color)),
+            Rect::new(area.right().saturating_sub(1), y, 1, 1),
+        );
+    }
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled("  ┌┈┈┈┈┈┈┈┈┈┈┐", Style::default().fg(color)),
             Line::from(vec![
-                Span::styled("  ┊    ", Style::default().fg(color)),
-                Span::styled(pulse, Style::default().fg(ORANGE).bold()),
-                Span::styled("     ┊", Style::default().fg(color)),
+                Span::styled("+  ", Style::default().fg(ORANGE).bold()),
+                Span::styled("New group", Style::default().fg(TEXT).bold()),
             ]),
-            Line::styled("  └┈┈┈┈┈┈┈┈┈┈┘", Style::default().fg(color)),
-            Line::styled(
-                "    New group",
-                Style::default()
-                    .fg(if selected { TEXT } else { Color::Gray })
-                    .bold(),
-            ),
-            Line::styled("    Enter to add", Style::default().fg(DIM)),
+            Line::styled("Create a machine group", Style::default().fg(DIM)),
+            Line::from(""),
+            Line::styled("Enter to add", Style::default().fg(color)),
         ])
-        .style(Style::default().bg(if selected { SURFACE } else { INK })),
-        button,
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true }),
+        inner,
     );
+}
+
+fn canvas_style(app: &App) -> Style {
+    if app.background_enabled {
+        Style::default().bg(INK)
+    } else {
+        Style::default()
+    }
+}
+
+fn card_background(app: &App, selected: bool) -> Style {
+    if app.background_enabled {
+        Style::default().bg(if selected { SURFACE } else { INK })
+    } else {
+        Style::default()
+    }
 }
 
 fn render_create_group(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -550,7 +517,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area,
         app,
         2,
-        "↑↓ select  ·  Esc home  ·  m machines  ·  q quit",
+        "↑↓ select  ·  Enter/Space change  ·  Esc home  ·  m machines  ·  q quit",
     );
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -561,11 +528,8 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ])
         .split(inner);
     let sections = [
-        (
-            "Appearance & themes",
-            "Palette, motion and community themes",
-            ORANGE,
-        ),
+        ("Appearance", "Background and motion preferences", ORANGE),
+        ("Themes", "Palette and community themes", CYAN),
         ("Agents", "Local service and remote pairing", GREEN),
         (
             "Machine groups",
@@ -575,7 +539,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         (
             "Data & integrations",
             "Prometheus, history and retention",
-            CYAN,
+            Color::Rgb(164, 143, 214),
         ),
     ];
     let sidebar = Layout::default()
@@ -601,6 +565,10 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
     }
     let (title, detail, color) = sections[app.settings_selected];
+    if app.settings_selected == 0 {
+        render_appearance_settings(frame, columns[2], app, color);
+        return;
+    }
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(title, Style::default().fg(color).bold()),
@@ -622,6 +590,67 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         columns[2],
     );
+}
+
+fn render_appearance_settings(frame: &mut Frame<'_>, area: Rect, app: &App, color: Color) {
+    let block = Block::default()
+        .title(" APPEARANCE ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(6),
+            Constraint::Min(2),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Appearance", Style::default().fg(color).bold()),
+            Line::styled(
+                "Choose whether nekoHub paints its own canvas.",
+                Style::default().fg(Color::Gray),
+            ),
+        ]),
+        rows[0],
+    );
+    let checkbox = if app.background_enabled { "[x]" } else { "[ ]" };
+    let state = if app.background_enabled {
+        "Solid nekoHub background"
+    } else {
+        "Terminal background · transparency and blur visible"
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(format!(" {checkbox} "), Style::default().fg(color).bold()),
+                Span::styled(
+                    "Draw application background",
+                    Style::default().fg(TEXT).bold(),
+                ),
+            ]),
+            Line::from(""),
+            Line::styled(format!("     {state}"), Style::default().fg(Color::Gray)),
+            Line::styled("     Enter or Space to toggle", Style::default().fg(DIM)),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(color)),
+        ),
+        rows[1],
+    );
+    if let Some(notice) = app.settings_notice.as_deref() {
+        frame.render_widget(
+            Paragraph::new(notice).style(Style::default().fg(color)),
+            rows[2],
+        );
+    }
 }
 
 #[allow(clippy::too_many_lines)]
