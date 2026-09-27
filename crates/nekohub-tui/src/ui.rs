@@ -16,13 +16,14 @@ use ratatui::{
 
 use crate::app::{App, HostState, View};
 
-const AMBER: Color = Color::Rgb(255, 176, 0);
-const ORANGE: Color = Color::Rgb(255, 112, 0);
-const DIM: Color = Color::Rgb(117, 83, 20);
-const GREEN: Color = Color::Rgb(112, 255, 112);
+const AMBER: Color = Color::Rgb(103, 199, 255);
+const ORANGE: Color = Color::Rgb(181, 140, 255);
+const DIM: Color = Color::Rgb(70, 91, 111);
+const GREEN: Color = Color::Rgb(102, 226, 178);
 const RED: Color = Color::Rgb(255, 74, 74);
-const CYAN: Color = Color::Rgb(0, 205, 235);
-const INK: Color = Color::Rgb(24, 24, 22);
+const CYAN: Color = Color::Rgb(112, 220, 232);
+const INK: Color = Color::Rgb(15, 24, 33);
+const TEXT: Color = Color::Rgb(214, 226, 238);
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     match app.view {
@@ -39,8 +40,16 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             render_agent_setup(frame, frame.area(), app);
             return;
         }
+        View::Home => {
+            render_home(frame, frame.area(), app);
+            return;
+        }
         View::RemotePicker => {
             render_remote_picker(frame, frame.area(), app);
+            return;
+        }
+        View::Settings => {
+            render_settings(frame, frame.area(), app);
             return;
         }
         View::Overview | View::Detail => {}
@@ -57,7 +66,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     match app.view {
         View::Overview => render_overview(frame, shell[1], app),
         View::Detail => render_detail(frame, shell[1], app.selected()),
-        View::Welcome | View::AgentConfirm | View::AgentSetup | View::RemotePicker => {
+        View::Welcome
+        | View::AgentConfirm
+        | View::AgentSetup
+        | View::Home
+        | View::RemotePicker
+        | View::Settings => {
             unreachable!("setup views return before shell render")
         }
     }
@@ -126,16 +140,249 @@ fn render_agent_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+fn render_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let outer = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" nekoHub ", Style::default().fg(INK).bg(AMBER).bold()),
+            Span::styled(" HOME ", Style::default().fg(DIM)),
+        ]))
+        .title_bottom(
+            Line::from(" ↑↓ choose  ·  Enter open  ·  q quit ")
+                .style(Style::default().fg(DIM))
+                .centered(),
+        )
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(DIM));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let width = inner.width.min(78);
+    let height = inner.height.min(22);
+    let content = Rect::new(
+        inner.x + inner.width.saturating_sub(width) / 2,
+        inner.y + inner.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(4),
+            Constraint::Length(4),
+            Constraint::Length(1),
+            Constraint::Length(4),
+            Constraint::Min(1),
+        ])
+        .split(content);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Choose a machine space", Style::default().fg(TEXT).bold()),
+            Line::from(""),
+            Line::styled(
+                "Start local, open a fleet, or adjust how nekoHub behaves.",
+                Style::default().fg(DIM),
+            ),
+        ]),
+        rows[0],
+    );
+
+    let live = if app.animation_tick % 16 < 8 {
+        "● READY"
+    } else {
+        "• READY"
+    };
+    render_home_item(
+        frame,
+        rows[1],
+        "This machine",
+        "Local agent · 1 host",
+        live,
+        app.home_selected == 0,
+        GREEN,
+    );
+    let remote_count = app.remote_hosts.len();
+    render_home_item(
+        frame,
+        rows[2],
+        "Remote fleet",
+        &format!("SSH inventory · {remote_count} discovered"),
+        if remote_count == 0 {
+            "EMPTY"
+        } else {
+            "PAIRING NEEDED"
+        },
+        app.home_selected == 1,
+        ORANGE,
+    );
+    frame.render_widget(
+        Paragraph::new("SYSTEM").style(Style::default().fg(DIM).bold()),
+        rows[3],
+    );
+    render_home_item(
+        frame,
+        rows[4],
+        "Settings",
+        "Appearance, agents, data and preferences",
+        "OPEN",
+        app.home_selected == 2,
+        CYAN,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_home_item(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    detail: &str,
+    status: &str,
+    selected: bool,
+    status_color: Color,
+) {
+    let border = if selected { AMBER } else { DIM };
+    let title_color = if selected { TEXT } else { Color::Gray };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    if selected { "  ›  " } else { "     " },
+                    Style::default().fg(AMBER).bold(),
+                ),
+                Span::styled(title.to_owned(), Style::default().fg(title_color).bold()),
+            ]),
+            Line::from(vec![
+                Span::raw("     "),
+                Span::styled(detail.to_owned(), Style::default().fg(DIM)),
+            ]),
+        ]),
+        inner,
+    );
+    let status_width = status.chars().count() as u16 + 2;
+    if status_width < inner.width {
+        let status_area = Rect::new(
+            inner.right().saturating_sub(status_width),
+            inner.y,
+            status_width,
+            1,
+        );
+        frame.render_widget(
+            Paragraph::new(status.to_owned()).style(Style::default().fg(status_color).bold()),
+            status_area,
+        );
+    }
+}
+
+fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let outer = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" nekoHub ", Style::default().fg(INK).bg(AMBER).bold()),
+            Span::styled(" SETTINGS ", Style::default().fg(DIM)),
+        ]))
+        .title_bottom(
+            Line::from(" Esc return to menu  ·  q quit ")
+                .style(Style::default().fg(DIM))
+                .centered(),
+        )
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(DIM));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(5), Constraint::Min(12)])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Settings foundation", Style::default().fg(TEXT).bold()),
+            Line::from(""),
+            Line::styled(
+                "These sections will become configurable as the product grows.",
+                Style::default().fg(DIM),
+            ),
+        ])
+        .alignment(Alignment::Center),
+        rows[0],
+    );
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[1]);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(columns[0]);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(columns[1]);
+    render_settings_card(
+        frame,
+        left[0],
+        "Appearance & themes",
+        "Palette, motion and community themes",
+        ORANGE,
+    );
+    render_settings_card(
+        frame,
+        left[1],
+        "Agents",
+        "Local service and future remote pairing",
+        GREEN,
+    );
+    render_settings_card(
+        frame,
+        right[0],
+        "Machine groups",
+        &format!("{} remote hosts discovered", app.remote_hosts.len()),
+        AMBER,
+    );
+    render_settings_card(
+        frame,
+        right[1],
+        "Data & integrations",
+        "Prometheus, history and retention",
+        CYAN,
+    );
+}
+
+fn render_settings_card(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    detail: &str,
+    color: Color,
+) {
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(title.to_owned(), Style::default().fg(color).bold()),
+            Line::from(""),
+            Line::styled(detail.to_owned(), Style::default().fg(Color::Gray)),
+            Line::from(""),
+            Line::styled("COMING NEXT", Style::default().fg(DIM).bold()),
+        ])
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(DIM)),
+        ),
+        area,
+    );
+}
+
 #[allow(clippy::too_many_lines)]
 fn render_agent_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let pulse = match app.animation_tick % 18 {
-        0..=5 => DIM,
-        6..=11 => AMBER,
-        _ => ORANGE,
-    };
     let failed = app.setup_error.is_some();
-    let accent = if failed { RED } else { pulse };
-    let spinner = ["◜", "◠", "◝", "◞", "◡", "◟"][(app.animation_tick as usize / 2) % 6];
+    let accent = if failed { RED } else { AMBER };
+    let activity = ["·", "•", "●", "•"][(app.animation_tick as usize / 3) % 4];
     let footer = if failed {
         " Enter retry  ·  Esc back  ·  q quit "
     } else {
@@ -143,7 +390,7 @@ fn render_agent_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let outer = Block::default()
         .title(Line::from(vec![
-            Span::styled(format!(" {spinner} "), Style::default().fg(accent)),
+            Span::styled(format!(" {activity} "), Style::default().fg(accent)),
             Span::styled("nekoHub", Style::default().fg(AMBER).bold()),
             Span::styled(" / AGENT SETUP ", Style::default().fg(DIM)),
         ]))
@@ -155,16 +402,9 @@ fn render_agent_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     let width = inner.width.min(70);
     let height = inner.height.min(if failed { 18 } else { 15 });
-    let age = app
-        .animation_tick
-        .saturating_sub(app.setup_started_tick)
-        .min(8) as u16;
-    let slide = 8_u16
-        .saturating_sub(age)
-        .min(inner.height.saturating_sub(height) / 2);
     let panel = Rect::new(
         inner.x + inner.width.saturating_sub(width) / 2,
-        inner.y + inner.height.saturating_sub(height) / 2 + slide,
+        inner.y + inner.height.saturating_sub(height) / 2,
         width,
         height,
     );
@@ -263,21 +503,18 @@ fn render_agent_setup(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let pulse = match app.animation_tick % 18 {
-        0..=5 => DIM,
-        6..=11 => AMBER,
-        _ => ORANGE,
-    };
-    let spinner = ["·", "•", "●", "•"][(app.animation_tick as usize / 2) % 4];
     let outer = Block::default()
         .title(Line::from(vec![
-            Span::styled(format!(" {spinner} "), Style::default().fg(pulse)),
-            Span::styled("nekoHub", Style::default().fg(AMBER).bold()),
+            Span::styled(" nekoHub ", Style::default().fg(INK).bg(AMBER).bold()),
             Span::styled(" / INITIAL SETUP ", Style::default().fg(DIM)),
         ]))
-        .title_bottom(Line::from(" ↑↓ select  ·  Enter continue  ·  q quit ").centered())
+        .title_bottom(
+            Line::from(" ↑↓ select  ·  Enter continue  ·  q quit ")
+                .style(Style::default().fg(DIM))
+                .centered(),
+        )
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(pulse));
+        .border_style(Style::default().fg(DIM));
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
@@ -302,11 +539,11 @@ fn render_welcome(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(
-                "What do you want to monitor?",
-                Style::default().fg(AMBER).bold(),
+                "Start with one machine. Build your fleet over time.",
+                Style::default().fg(TEXT).bold(),
             ),
             Line::styled(
-                "Choose a starting point. You can add more machines later.",
+                "Choose where nekoHub should begin.",
                 Style::default().fg(DIM),
             ),
         ])
@@ -440,12 +677,18 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut line = vec![
-        Span::styled(" FLEET ", Style::default().fg(INK).bg(AMBER).bold()),
-        Span::styled(" SYSTEMS  ", Style::default().fg(AMBER)),
+        Span::styled(" nekoHub ", Style::default().fg(INK).bg(AMBER).bold()),
+        Span::styled("  /  ", Style::default().fg(DIM)),
+        Span::styled(
+            app.selected()
+                .map_or("MACHINES", |host| host.target.display_name.as_str()),
+            Style::default().fg(TEXT).bold(),
+        ),
+        Span::raw("   "),
     ];
-    for (label, view) in [("1 OVERVIEW", View::Overview), ("2 HOST", View::Detail)] {
+    for (label, view) in [("OVERVIEW", View::Overview), ("DETAILS", View::Detail)] {
         let style = if app.view == view {
-            Style::default().fg(INK).bg(AMBER).bold()
+            Style::default().fg(AMBER).bold()
         } else {
             Style::default().fg(DIM)
         };
@@ -459,7 +702,11 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
     frame.render_widget(header, area);
 
-    let status = format!("{} / {} ONLINE ", app.online_count(), app.hosts.len());
+    let status = if app.online_count() == app.hosts.len() && !app.hosts.is_empty() {
+        "● LIVE ".to_owned()
+    } else {
+        "○ CONNECTING ".to_owned()
+    };
     let width = status.chars().count() as u16;
     let status_area = Rect::new(area.right().saturating_sub(width + 1), area.y + 1, width, 1);
     let color = if app.online_count() == app.hosts.len() && !app.hosts.is_empty() {
@@ -474,6 +721,10 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_overview(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if app.hosts.len() == 1 {
+        render_local_dashboard(frame, area, app.selected());
+        return;
+    }
     let summary_height = if area.height >= 24 { 8 } else { 6 };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -481,6 +732,231 @@ fn render_overview(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .split(area);
     render_summary(frame, rows[0], app);
     render_host_grid(frame, rows[1], app);
+}
+
+#[allow(clippy::too_many_lines)]
+fn render_local_dashboard(frame: &mut Frame<'_>, area: Rect, host: Option<&HostState>) {
+    let Some(host) = host else {
+        frame.render_widget(
+            Paragraph::new("No local machine selected.")
+                .style(Style::default().fg(DIM))
+                .alignment(Alignment::Center),
+            area,
+        );
+        return;
+    };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(8),
+            Constraint::Min(7),
+        ])
+        .split(area);
+    let state_color = if host.last_error.is_some() {
+        RED
+    } else if host.snapshot.is_some() {
+        GREEN
+    } else {
+        AMBER
+    };
+    let hero = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(DIM));
+    let hero_inner = hero.inner(rows[0]);
+    frame.render_widget(hero, rows[0]);
+    let identity = host.snapshot.as_ref().map_or_else(
+        || "Waiting for the first sample".to_owned(),
+        |snapshot| format!("{}  ·  {}", snapshot.os, snapshot.kernel),
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    "  THIS MACHINE  ",
+                    Style::default().fg(INK).bg(AMBER).bold(),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    host.snapshot
+                        .as_ref()
+                        .map_or(host.target.display_name.as_str(), |snapshot| {
+                            snapshot.hostname.as_str()
+                        }),
+                    Style::default().fg(TEXT).bold(),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    if host.last_error.is_some() {
+                        "○ OFFLINE"
+                    } else if host.snapshot.is_some() {
+                        "● HEALTHY"
+                    } else {
+                        "◌ CONNECTING"
+                    },
+                    Style::default().fg(state_color).bold(),
+                ),
+            ]),
+            Line::from(""),
+            Line::styled(format!("  {identity}"), Style::default().fg(DIM)),
+        ]),
+        hero_inner,
+    );
+
+    let metric_columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ])
+        .split(rows[1]);
+    let snapshot = host.snapshot.as_ref();
+    render_dashboard_metric(
+        frame,
+        metric_columns[0],
+        "CPU",
+        snapshot.and_then(|sample| sample.cpu_percent),
+        snapshot.map_or("warming up".into(), |sample| {
+            format!(
+                "load {:.2} · {:.2} · {:.2}",
+                sample.load[0], sample.load[1], sample.load[2]
+            )
+        }),
+        AMBER,
+    );
+    render_dashboard_metric(
+        frame,
+        metric_columns[1],
+        "MEMORY",
+        snapshot.and_then(|sample| sample.memory.percent()),
+        snapshot.map_or("waiting for data".into(), |sample| {
+            format!(
+                "{} / {}",
+                bytes(sample.memory.used),
+                bytes(sample.memory.total)
+            )
+        }),
+        ORANGE,
+    );
+    render_dashboard_metric(
+        frame,
+        metric_columns[2],
+        "ROOT DISK",
+        snapshot.and_then(|sample| sample.root_disk.percent()),
+        snapshot.map_or("waiting for data".into(), |sample| {
+            format!(
+                "{} / {}",
+                bytes(sample.root_disk.used),
+                bytes(sample.root_disk.total)
+            )
+        }),
+        GREEN,
+    );
+
+    let lower = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[2]);
+    let (receive, transmit, uptime) = snapshot.map_or_else(
+        || ("--".into(), "--".into(), "--".into()),
+        |sample| {
+            (
+                format!("{}/s", bytes(sample.network.read_per_sec as u64)),
+                format!("{}/s", bytes(sample.network.write_per_sec as u64)),
+                human_duration(Duration::from_secs(sample.uptime_secs)),
+            )
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("NETWORK", Style::default().fg(CYAN).bold()),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("↓  ", Style::default().fg(DIM)),
+                Span::styled(receive, Style::default().fg(TEXT).bold()),
+                Span::styled("     ↑  ", Style::default().fg(DIM)),
+                Span::styled(transmit, Style::default().fg(TEXT).bold()),
+            ]),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(DIM)),
+        ),
+        lower[0],
+    );
+    let history_width = usize::from(lower[1].width.saturating_sub(6)).clamp(8, 50);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("ACTIVITY", Style::default().fg(ORANGE).bold()),
+                Span::styled(format!("   uptime {uptime}"), Style::default().fg(DIM)),
+            ]),
+            Line::from(""),
+            Line::styled(
+                sparkline_text(&host.cpu_history, history_width),
+                Style::default().fg(AMBER),
+            ),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(DIM)),
+        ),
+        lower[1],
+    );
+}
+
+fn render_dashboard_metric(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    value: Option<f64>,
+    detail: String,
+    color: Color,
+) {
+    let percent = value.unwrap_or_default().clamp(0.0, 100.0);
+    let display = value.map_or_else(|| "--".into(), |value| format!("{value:.1}%"));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(DIM));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(label.to_owned()).style(Style::default().fg(DIM).bold()),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(display).style(Style::default().fg(color).bold()),
+        rows[1],
+    );
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(Style::default().fg(color).bg(INK))
+            .ratio(percent / 100.0)
+            .label(""),
+        rows[2],
+    );
+    frame.render_widget(
+        Paragraph::new(detail)
+            .style(Style::default().fg(Color::Gray))
+            .wrap(Wrap { trim: true }),
+        rows[3],
+    );
 }
 
 fn render_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -882,14 +1358,13 @@ fn render_metric_table(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
 }
 
 fn render_footer(frame: &mut Frame<'_>, area: Rect, view: View) {
-    let mut spans = vec![
-        key("↑↓/jk"),
-        Span::styled(" select   ", Style::default().fg(DIM)),
-    ];
+    let mut spans = Vec::new();
     if view == View::Overview {
         spans.extend([
             key("Enter"),
-            Span::styled(" inspect   ", Style::default().fg(DIM)),
+            Span::styled(" details   ", Style::default().fg(DIM)),
+            key("Esc"),
+            Span::styled(" menu   ", Style::default().fg(DIM)),
         ]);
     } else {
         spans.extend([
@@ -910,10 +1385,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, view: View) {
 }
 
 fn key(label: &'static str) -> Span<'static> {
-    Span::styled(
-        format!(" {label} "),
-        Style::default().fg(INK).bg(DIM).bold(),
-    )
+    Span::styled(format!(" {label} "), Style::default().fg(AMBER).bold())
 }
 
 fn sparkline_text(values: &std::collections::VecDeque<u64>, width: usize) -> String {
@@ -1000,6 +1472,12 @@ mod tests {
             app.update_agent_setup(72, "Validating CPU, memory, disk and network".into());
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.fail_agent_setup("Could not reach the local agent".into());
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.open_home();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.open_settings();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.start_monitoring(nekohub_core::HostTarget::from_alias("local"));
             terminal.draw(|frame| render(frame, &app)).unwrap();
         }
     }

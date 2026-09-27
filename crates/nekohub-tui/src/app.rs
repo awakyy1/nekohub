@@ -7,7 +7,9 @@ pub enum View {
     Welcome,
     AgentConfirm,
     AgentSetup,
+    Home,
     RemotePicker,
+    Settings,
     Overview,
     Detail,
 }
@@ -42,6 +44,7 @@ pub struct App {
     pub view: View,
     pub welcome_selected: usize,
     pub agent_confirm_selected: usize,
+    pub home_selected: usize,
     pub remote_hosts: Vec<HostTarget>,
     pub remote_selected: usize,
     pub animation_tick: u64,
@@ -51,7 +54,7 @@ pub struct App {
     pub setup_visible_progress: u16,
     pub setup_message: String,
     pub setup_error: Option<String>,
-    pub setup_started_tick: u64,
+    remote_return_view: View,
     by_id: HashMap<String, usize>,
 }
 
@@ -63,6 +66,7 @@ impl App {
             view: View::Welcome,
             welcome_selected: 0,
             agent_confirm_selected: 1,
+            home_selected: 0,
             remote_hosts,
             remote_selected: 0,
             animation_tick: 0,
@@ -72,7 +76,7 @@ impl App {
             setup_visible_progress: 0,
             setup_message: String::new(),
             setup_error: None,
-            setup_started_tick: 0,
+            remote_return_view: View::Welcome,
             by_id: HashMap::new(),
         }
     }
@@ -90,6 +94,7 @@ impl App {
             view: View::Overview,
             welcome_selected: 0,
             agent_confirm_selected: 1,
+            home_selected: 0,
             remote_hosts: Vec::new(),
             remote_selected: 0,
             animation_tick: 0,
@@ -99,9 +104,15 @@ impl App {
             setup_visible_progress: 0,
             setup_message: String::new(),
             setup_error: None,
-            setup_started_tick: 0,
+            remote_return_view: View::Home,
             by_id,
         }
+    }
+
+    pub fn home(remote_hosts: Vec<HostTarget>) -> Self {
+        let mut app = Self::new(remote_hosts);
+        app.view = View::Home;
+        app
     }
 
     pub fn start_monitoring(&mut self, target: HostTarget) {
@@ -169,6 +180,26 @@ impl App {
         self.view = View::Welcome;
     }
 
+    pub fn open_home(&mut self) {
+        self.hosts.clear();
+        self.by_id.clear();
+        self.selected = 0;
+        self.home_selected = 0;
+        self.view = View::Home;
+    }
+
+    pub fn next_home_item(&mut self) {
+        self.home_selected = (self.home_selected + 1) % 3;
+    }
+
+    pub fn previous_home_item(&mut self) {
+        self.home_selected = self.home_selected.checked_sub(1).unwrap_or(2);
+    }
+
+    pub fn open_settings(&mut self) {
+        self.view = View::Settings;
+    }
+
     pub fn open_agent_confirmation(&mut self) {
         self.agent_confirm_selected = 1;
         self.view = View::AgentConfirm;
@@ -179,7 +210,13 @@ impl App {
     }
 
     pub fn open_remote_picker(&mut self) {
+        self.remote_return_view = self.view;
         self.view = View::RemotePicker;
+        self.remote_notice = None;
+    }
+
+    pub fn close_remote_picker(&mut self) {
+        self.view = self.remote_return_view;
         self.remote_notice = None;
     }
 
@@ -189,7 +226,6 @@ impl App {
         self.setup_visible_progress = 0;
         self.setup_message = "Preparing local agent setup".into();
         self.setup_error = None;
-        self.setup_started_tick = self.animation_tick;
     }
 
     pub fn update_agent_setup(&mut self, progress: u16, message: String) {
@@ -279,5 +315,16 @@ mod tests {
         assert_eq!(app.agent_confirm_selected, 1);
         app.toggle_agent_confirmation();
         assert_eq!(app.agent_confirm_selected, 0);
+    }
+
+    #[test]
+    fn home_menu_wraps_and_opens_after_setup() {
+        let mut app = App::new(Vec::new());
+        app.open_home();
+        assert_eq!(app.view, View::Home);
+        app.previous_home_item();
+        assert_eq!(app.home_selected, 2);
+        app.next_home_item();
+        assert_eq!(app.home_selected, 0);
     }
 }

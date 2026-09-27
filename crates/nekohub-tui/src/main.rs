@@ -56,21 +56,10 @@ struct Args {
 
 enum CollectionEvent {
     Snapshot(HostSnapshot),
-    Error {
-        host_id: String,
-        message: String,
-    },
-    SetupProgress {
-        progress: u16,
-        message: String,
-    },
-    SetupComplete {
-        target: HostTarget,
-        snapshot: HostSnapshot,
-    },
-    SetupError {
-        message: String,
-    },
+    Error { host_id: String, message: String },
+    SetupProgress { progress: u16, message: String },
+    SetupComplete,
+    SetupError { message: String },
 }
 
 #[tokio::main]
@@ -210,16 +199,12 @@ async fn run_tui(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let local: Arc<dyn Collector> = Arc::new(AgentCollector::new(agent_socket, timeout));
     let state_path = onboarding::state_path();
-    let (mut app, initial) = if onboarding::is_complete(&state_path) {
-        let target = local_target();
-        (
-            App::monitoring(vec![target.clone()]),
-            Some((vec![target], Arc::clone(&local))),
-        )
+    let mut app = if onboarding::is_complete(&state_path) {
+        App::home(remote_hosts)
     } else {
-        (App::new(remote_hosts), None)
+        App::new(remote_hosts)
     };
-    run_event_loop(&mut app, initial, Some(local), refresh_every, state_path).await
+    run_event_loop(&mut app, None, Some(local), refresh_every, state_path).await
 }
 
 #[allow(clippy::too_many_lines)]
@@ -268,16 +253,7 @@ async fn run_event_loop(
                 CollectionEvent::SetupProgress { progress, message } => {
                     app.update_agent_setup(progress, message);
                 }
-                CollectionEvent::SetupComplete { target, snapshot } => {
-                    app.start_monitoring(target.clone());
-                    app.apply_snapshot(snapshot);
-                    if let Some(collector) = local_collector.as_ref() {
-                        spawn_worker(
-                            &mut workers, target, Arc::clone(collector), refresh_every,
-                            &event_tx, &refresh_tx, &shutdown_rx,
-                        );
-                    }
-                }
+                CollectionEvent::SetupComplete => app.open_home(),
                 CollectionEvent::SetupError { message } => app.fail_agent_setup(message),
             },
             Some(input) = input.next() => match input? {
@@ -333,19 +309,45 @@ async fn run_event_loop(
                             KeyCode::Esc if app.setup_error.is_some() => app.open_welcome(),
                             _ => {}
                         },
+                        View::Home => match key.code {
+                            KeyCode::Down | KeyCode::Right | KeyCode::Tab | KeyCode::Char('j' | 'l') => {
+                                app.next_home_item();
+                            }
+                            KeyCode::Up | KeyCode::Left | KeyCode::BackTab | KeyCode::Char('h' | 'k') => {
+                                app.previous_home_item();
+                            }
+                            KeyCode::Enter if app.home_selected == 0 => {
+                                if let Some(collector) = local_collector.as_ref() {
+                                    let target = local_target();
+                                    app.start_monitoring(target.clone());
+                                    spawn_worker(
+                                        &mut workers, target, Arc::clone(collector), refresh_every,
+                                        &event_tx, &refresh_tx, &shutdown_rx,
+                                    );
+                                }
+                            }
+                            KeyCode::Enter if app.home_selected == 1 => app.open_remote_picker(),
+                            KeyCode::Enter => app.open_settings(),
+                            _ => {}
+                        },
                         View::RemotePicker => match key.code {
                             KeyCode::Down | KeyCode::Char('j') => app.next_remote(),
                             KeyCode::Up | KeyCode::Char('k') => app.previous_remote(),
-                            KeyCode::Esc => app.open_welcome(),
+                            KeyCode::Esc => app.close_remote_picker(),
                             KeyCode::Enter => {
                                 app.explain_remote_pairing();
                             }
+                            _ => {}
+                        },
+                        View::Settings => match key.code {
+                            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.open_home(),
                             _ => {}
                         },
                         View::Overview => match key.code {
                             KeyCode::Down | KeyCode::Char('j') => app.next(),
                             KeyCode::Up | KeyCode::Char('k') => app.previous(),
                             KeyCode::Enter => app.open_detail(),
+                            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.open_home(),
                             KeyCode::Char('r') => { let _ = refresh_tx.send(()); },
                             _ => {}
                         },
@@ -392,7 +394,7 @@ async fn agent_setup(
 ) {
     let result = perform_agent_setup(&target, collector, &event_tx, &state_path).await;
     let event = match result {
-        Ok(snapshot) => CollectionEvent::SetupComplete { target, snapshot },
+        Ok(_) => CollectionEvent::SetupComplete,
         Err(message) => CollectionEvent::SetupError { message },
     };
     let _ = event_tx.send(event).await;
