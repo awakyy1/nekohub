@@ -314,11 +314,11 @@ fn render_home_header(frame: &mut Frame<'_>, area: Rect, app: &App, active_nav: 
         });
     let from = buttons[indicator_from.min(2)];
     let to = buttons[indicator_to.min(2)];
-    let progress = u32::from(frame_index.min(total_frames));
-    let total = u32::from(total_frames.max(1));
+    let progress = i32::from(frame_index.min(total_frames));
+    let total = i32::from(total_frames.max(1));
     let from_x = i32::from(from.x.saturating_add(2));
     let to_x = i32::from(to.x.saturating_add(2));
-    let indicator_x = from_x + (to_x - from_x) * progress as i32 / total as i32;
+    let indicator_x = from_x + (to_x - from_x) * progress / total;
     let indicator_width = to.width.saturating_sub(4).max(1);
     frame.render_widget(
         Paragraph::new("━".repeat(usize::from(indicator_width))).style(Style::default().fg(AMBER)),
@@ -448,7 +448,7 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
             Line::from(vec![
                 Span::styled(format!("  {pulse} "), Style::default().fg(accent)),
                 Span::styled(
-                    state.trim_start_matches(|character| matches!(character, '●' | '○' | ' ')),
+                    state.trim_start_matches(['●', '○', ' ']),
                     Style::default().fg(accent),
                 ),
                 Span::styled(
