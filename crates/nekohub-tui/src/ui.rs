@@ -11,7 +11,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Sparkline, Table, Wrap,
+    },
 };
 
 use crate::app::{App, HomeFocus, HostState, View};
@@ -65,8 +67,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         frame,
         frame.area(),
         app,
-        0,
-        "Esc home  ·  r refresh  ·  m machines  ·  s settings  ·  q quit",
+        1,
+        "↑↓ sections  ·  Enter open  ·  n/p machine  ·  r refresh  ·  Esc home  ·  q quit",
     );
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -160,15 +162,36 @@ fn render_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(1),
+        ])
         .split(content);
-    render_group_grid(frame, rows[0], app);
+    let ready = 1;
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("GROUPS", Style::default().fg(AMBER).bold()),
+            Span::styled(
+                format!("    {} spaces", app.machine_groups.len() + 1),
+                Style::default().fg(DIM),
+            ),
+            Span::styled(format!("    ● {ready} ready"), Style::default().fg(GREEN)),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(LINE)),
+        ),
+        animated_area(rows[0], app, 0, 3),
+    );
+    render_group_grid(frame, rows[1], app);
     if let Some(notice) = app.home_notice.as_deref() {
         frame.render_widget(
             Paragraph::new(notice)
                 .style(Style::default().fg(ORANGE))
                 .alignment(Alignment::Center),
-            rows[1],
+            rows[2],
         );
     }
 }
@@ -279,36 +302,57 @@ fn render_home_header(frame: &mut Frame<'_>, area: Rect, app: &App, active_nav: 
             .block(
                 Block::default()
                     .borders(Borders::BOTTOM)
-                    .border_style(Style::default().fg(color)),
+                    .border_style(Style::default().fg(LINE)),
             ),
             buttons[index],
         );
     }
+    let (indicator_from, indicator_to, frame_index, total_frames) = app
+        .navigation_motion
+        .map_or((active_nav, active_nav, 1, 1), |motion| {
+            (motion.from, motion.to, motion.frame, motion.total_frames)
+        });
+    let from = buttons[indicator_from.min(2)];
+    let to = buttons[indicator_to.min(2)];
+    let progress = u32::from(frame_index.min(total_frames));
+    let total = u32::from(total_frames.max(1));
+    let from_x = i32::from(from.x.saturating_add(2));
+    let to_x = i32::from(to.x.saturating_add(2));
+    let indicator_x = from_x + (to_x - from_x) * progress as i32 / total as i32;
+    let indicator_width = to.width.saturating_sub(4).max(1);
+    frame.render_widget(
+        Paragraph::new("━".repeat(usize::from(indicator_width))).style(Style::default().fg(AMBER)),
+        Rect::new(
+            u16::try_from(indicator_x.max(0)).unwrap_or_default(),
+            nav_area.bottom().saturating_sub(1),
+            indicator_width,
+            1,
+        ),
+    );
 }
 
 fn render_machine_strip(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut spans = vec![
-        Span::styled(" ● ", Style::default().fg(GREEN)),
+        Span::styled(" ● ", Style::default().fg(GREEN).bold()),
         Span::styled(app.local_name.as_str(), Style::default().fg(TEXT).bold()),
+        Span::styled("  LOCAL AGENT", Style::default().fg(DIM)),
     ];
     for host in &app.remote_hosts {
-        spans.push(Span::styled("    ○ ", Style::default().fg(DIM)));
+        spans.push(Span::styled("     ○ ", Style::default().fg(DIM)));
         spans.push(Span::styled(
             host.display_name.clone(),
             Style::default().fg(Color::Gray),
         ));
     }
     if app.remote_hosts.is_empty() {
-        spans.push(Span::styled(
-            "    No remote machines paired yet",
-            Style::default().fg(DIM),
-        ));
+        spans.push(Span::styled("     0 REMOTE", Style::default().fg(DIM)));
     }
+    spans.push(Span::styled("     0 ALERTS", Style::default().fg(GREEN)));
     frame.render_widget(
         Paragraph::new(Line::from(spans)).block(
             Block::default()
                 .title(Line::styled(
-                    format!(" machines  {} ", app.remote_hosts.len() + 1),
+                    format!(" FLEET PULSE  {} ", app.remote_hosts.len() + 1),
                     Style::default().fg(CYAN).bold(),
                 ))
                 .borders(Borders::TOP | Borders::BOTTOM)
@@ -343,7 +387,8 @@ fn render_group_grid(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 CARD_WIDTH.min(area.right().saturating_sub(x)),
                 CARD_HEIGHT.min(area.bottom().saturating_sub(y)),
             );
-            render_group_card(frame, card_area, app, index);
+            let stage = u8::try_from(index.saturating_sub(first) + 1).unwrap_or(u8::MAX);
+            render_group_card(frame, animated_area(card_area, app, stage, 4), app, index);
         }
     }
 }
@@ -379,20 +424,38 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
     let border = if selected { accent } else { LINE };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border))
         .style(card_background(app, selected));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let available = usize::from(inner.width.saturating_sub(1));
+    let title = clipped(&title, available.saturating_sub(3));
+    let heading = format!(" ◆ {title:<width$}", width = available.saturating_sub(3));
+    let pulse = ["·", "•", "●", "•"][(app.animation_tick as usize / 3) % 4];
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(" ◆  ", Style::default().fg(accent).bold()),
-                Span::styled(title, Style::default().fg(TEXT).bold()),
-            ]),
-            Line::styled(format!("    {count}"), Style::default().fg(DIM)),
+            Line::styled(
+                heading,
+                if selected {
+                    Style::default().fg(INK).bg(accent).bold()
+                } else {
+                    Style::default().fg(TEXT).bold()
+                },
+            ),
+            Line::styled(format!("   {count}"), Style::default().fg(DIM)),
             Line::from(""),
-            Line::styled(format!("    {state}"), Style::default().fg(accent)),
+            Line::from(vec![
+                Span::styled(format!("  {pulse} "), Style::default().fg(accent)),
+                Span::styled(
+                    state.trim_start_matches(|character| matches!(character, '●' | '○' | ' ')),
+                    Style::default().fg(accent),
+                ),
+                Span::styled(
+                    if selected { "   Enter ›" } else { "" },
+                    Style::default().fg(TEXT).bold(),
+                ),
+            ]),
         ])
         .wrap(Wrap { trim: true }),
         inner,
@@ -471,6 +534,26 @@ fn card_background(app: &App, selected: bool) -> Style {
     } else {
         Style::default()
     }
+}
+
+fn animated_area(area: Rect, app: &App, stage: u8, max_offset: u16) -> Rect {
+    let Some(motion) = app.navigation_motion else {
+        return area;
+    };
+    let total = motion.total_frames.saturating_sub(stage).max(1);
+    let frame = motion.frame.saturating_sub(stage).min(total);
+    let remaining = u16::from(total.saturating_sub(frame));
+    let offset = max_offset
+        .saturating_mul(remaining)
+        .checked_div(u16::from(total))
+        .unwrap_or_default()
+        .min(area.width.saturating_sub(1));
+    Rect::new(
+        area.x.saturating_add(offset),
+        area.y,
+        area.width.saturating_sub(offset),
+        area.height,
+    )
 }
 
 fn render_create_group(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -1072,7 +1155,7 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(24),
+            Constraint::Length(29),
             Constraint::Length(2),
             Constraint::Min(40),
         ])
@@ -1081,12 +1164,16 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let Some(host) = app.selected() else {
         return;
     };
+    if app.monitor_selected != 0 {
+        render_monitor_placeholder(frame, animated_area(columns[2], app, 2, 4), app, host);
+        return;
+    }
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(4),
-            Constraint::Length(5),
-            Constraint::Min(5),
+            Constraint::Length(1),
+            Constraint::Min(14),
         ])
         .split(columns[2]);
     let snapshot = host.snapshot.as_ref();
@@ -1107,53 +1194,74 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
+                Span::styled("NOW MONITORING  ", Style::default().fg(DIM).bold()),
                 Span::styled(hostname, Style::default().fg(TEXT).bold()),
                 Span::styled(
                     if host.last_error.is_some() {
-                        "    (-._.-) offline"
+                        "    ○ OFFLINE"
                     } else if snapshot.is_some() {
-                        "    (^._.^) healthy"
+                        "    ● LIVE"
                     } else {
-                        "    (^o_o^) collecting"
+                        "    ◌ COLLECTING"
                     },
-                    Style::default().fg(state_color),
+                    Style::default().fg(state_color).bold(),
                 ),
             ]),
-            Line::styled(identity, Style::default().fg(DIM)),
+            Line::from(vec![
+                Span::styled(identity, Style::default().fg(DIM)),
+                Span::styled(
+                    snapshot.map_or_else(String::new, |sample| {
+                        format!(
+                            "    uptime {}    latency {}ms",
+                            human_duration(Duration::from_secs(sample.uptime_secs)),
+                            sample.latency_ms
+                        )
+                    }),
+                    Style::default().fg(Color::Gray),
+                ),
+            ]),
         ])
         .block(
             Block::default()
                 .borders(Borders::BOTTOM)
                 .border_style(Style::default().fg(LINE)),
         ),
-        rows[0],
+        animated_area(rows[0], app, 0, 4),
     );
-
-    let metrics = Layout::default()
+    let dashboard = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
+            Constraint::Percentage(64),
+            Constraint::Length(2),
+            Constraint::Percentage(36),
         ])
-        .spacing(2)
-        .split(rows[1]);
-    render_soft_metric(
+        .split(rows[2]);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(58),
+            Constraint::Length(1),
+            Constraint::Min(7),
+        ])
+        .split(dashboard[0]);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(7),
+            Constraint::Length(1),
+            Constraint::Length(7),
+            Constraint::Length(1),
+            Constraint::Min(6),
+        ])
+        .split(dashboard[2]);
+    render_cpu_history(frame, animated_area(left[0], app, 1, 4), host);
+    render_network_history(frame, animated_area(left[2], app, 3, 4), host);
+    render_resource_panel(
         frame,
-        metrics[0],
-        "Cpu",
-        snapshot.and_then(|sample| sample.cpu_percent),
-        snapshot.map_or("warming up".into(), |sample| {
-            format!("load {:.2}", sample.load[0])
-        }),
-        AMBER,
-    );
-    render_soft_metric(
-        frame,
-        metrics[1],
-        "Memory",
+        animated_area(right[0], app, 2, 4),
+        "MEMORY",
         snapshot.and_then(|sample| sample.memory.percent()),
-        snapshot.map_or("waiting".into(), |sample| {
+        snapshot.map_or("waiting for data".into(), |sample| {
             format!(
                 "{} / {}",
                 bytes(sample.memory.used),
@@ -1162,12 +1270,12 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }),
         CYAN,
     );
-    render_soft_metric(
+    render_resource_panel(
         frame,
-        metrics[2],
-        "Root disk",
+        animated_area(right[2], app, 3, 4),
+        "ROOT DISK",
         snapshot.and_then(|sample| sample.root_disk.percent()),
-        snapshot.map_or("waiting".into(), |sample| {
+        snapshot.map_or("waiting for data".into(), |sample| {
             format!(
                 "{} / {}",
                 bytes(sample.root_disk.used),
@@ -1176,71 +1284,321 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }),
         GREEN,
     );
+    render_system_pulse(frame, animated_area(right[4], app, 4, 4), host);
+}
 
-    let (receive, transmit, uptime) = snapshot.map_or_else(
-        || ("--".into(), "--".into(), "--".into()),
-        |sample| {
-            (
-                format!("{}/s", bytes(sample.network.read_per_sec as u64)),
-                format!("{}/s", bytes(sample.network.write_per_sec as u64)),
-                human_duration(Duration::from_secs(sample.uptime_secs)),
-            )
-        },
-    );
-    let history_width = usize::from(rows[2].width.saturating_sub(4)).clamp(12, 72);
+fn render_monitor_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let sections = [
+        ("Overview", AMBER),
+        ("Processes", CYAN),
+        ("Network", GREEN),
+        ("Storage", ORANGE),
+        ("Services", Color::Rgb(164, 143, 214)),
+        ("Containers", CYAN),
+        ("Logs", Color::Gray),
+    ];
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            std::iter::once(Constraint::Length(5))
+                .chain(std::iter::repeat_n(Constraint::Length(3), sections.len()))
+                .collect::<Vec<_>>(),
+        )
+        .split(area);
+    let host = app.selected();
+    let hostname = host
+        .and_then(|host| {
+            host.snapshot
+                .as_ref()
+                .map(|sample| sample.hostname.as_str())
+        })
+        .or_else(|| host.map(|host| host.target.display_name.as_str()))
+        .unwrap_or(app.local_name.as_str());
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled("Network · latest sample", Style::default().fg(DIM)),
-                Span::styled(
-                    format!("    ↓ {receive}   ↑ {transmit}"),
-                    Style::default().fg(TEXT),
-                ),
-            ]),
-            Line::from(""),
+            Line::styled("MACHINE", Style::default().fg(DIM).bold()),
+            Line::styled(clipped(hostname, 24), Style::default().fg(TEXT).bold()),
             Line::styled(
-                sparkline_text(&host.cpu_history, history_width),
-                Style::default().fg(CYAN),
-            ),
-            Line::styled(
-                format!("cpu activity · uptime {uptime}"),
-                Style::default().fg(DIM),
+                if host.is_some_and(HostState::is_online) {
+                    "● agent connected"
+                } else {
+                    "◌ collecting metrics"
+                },
+                Style::default().fg(if host.is_some_and(HostState::is_online) {
+                    GREEN
+                } else {
+                    ORANGE
+                }),
             ),
         ])
         .block(
             Block::default()
-                .borders(Borders::TOP)
+                .borders(Borders::BOTTOM)
                 .border_style(Style::default().fg(LINE)),
         ),
+        rows[0],
+    );
+    for (index, (label, color)) in sections.into_iter().enumerate() {
+        let selected = app.monitor_selected == index;
+        frame.render_widget(
+            Paragraph::new(format!("{} {label}", if selected { "›" } else { " " }))
+                .style(if selected {
+                    Style::default().fg(INK).bg(color).bold()
+                } else {
+                    Style::default().fg(Color::Gray)
+                })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(if selected { color } else { DIM })),
+                ),
+            rows[index + 1],
+        );
+    }
+}
+
+fn render_cpu_history(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
+    let snapshot = host.snapshot.as_ref();
+    let value = snapshot.and_then(|sample| sample.cpu_percent);
+    let display = value.map_or_else(|| "--".into(), |value| format!("{value:.0}%"));
+    let detail = snapshot.map_or_else(
+        || "building a live baseline".into(),
+        |sample| {
+            format!(
+                "load  {:.2}  {:.2}  {:.2}",
+                sample.load[0], sample.load[1], sample.load[2]
+            )
+        },
+    );
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" CPU  ", Style::default().fg(DIM).bold()),
+            Span::styled(display, Style::default().fg(AMBER).bold()),
+        ]))
+        .title_bottom(Line::styled(
+            format!(" {detail} "),
+            Style::default().fg(DIM),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(AMBER));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let data: Vec<_> = host.cpu_history.iter().copied().collect();
+    if data.is_empty() {
+        frame.render_widget(
+            Paragraph::new("Waiting for the first CPU samples")
+                .style(Style::default().fg(DIM))
+                .alignment(Alignment::Center),
+            inner,
+        );
+    } else {
+        frame.render_widget(
+            Sparkline::default()
+                .data(&data)
+                .max(100)
+                .style(Style::default().fg(AMBER)),
+            inner,
+        );
+    }
+}
+
+fn render_network_history(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
+    let (receive, transmit) = host.snapshot.as_ref().map_or_else(
+        || ("--".into(), "--".into()),
+        |sample| {
+            (
+                format!("{}/s", bytes(sample.network.read_per_sec as u64)),
+                format!("{}/s", bytes(sample.network.write_per_sec as u64)),
+            )
+        },
+    );
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" NETWORK  ", Style::default().fg(DIM).bold()),
+            Span::styled(format!("↓ {receive}"), Style::default().fg(CYAN).bold()),
+            Span::styled("    ", Style::default()),
+            Span::styled(format!("↑ {transmit}"), Style::default().fg(GREEN).bold()),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(LINE));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(inner);
+    let rx: Vec<_> = host.network_rx_history.iter().copied().collect();
+    let tx: Vec<_> = host.network_tx_history.iter().copied().collect();
+    if rx.is_empty() {
+        frame.render_widget(
+            Paragraph::new("Waiting for network activity")
+                .style(Style::default().fg(DIM))
+                .alignment(Alignment::Center),
+            inner,
+        );
+        return;
+    }
+    frame.render_widget(
+        Sparkline::default()
+            .data(&rx)
+            .style(Style::default().fg(CYAN)),
+        rows[0],
+    );
+    frame.render_widget(
+        Sparkline::default()
+            .data(&tx)
+            .style(Style::default().fg(GREEN)),
+        rows[1],
+    );
+}
+
+fn render_resource_panel(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    value: Option<f64>,
+    detail: String,
+    color: Color,
+) {
+    let percent = value.unwrap_or_default().clamp(0.0, 100.0);
+    let display = value.map_or_else(|| "--".into(), |value| format!("{value:.0}%"));
+    let block = Block::default()
+        .title(Line::styled(
+            format!(" {label} "),
+            Style::default().fg(DIM).bold(),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(LINE));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(display).style(Style::default().fg(color).bold()),
+        rows[0],
+    );
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(Style::default().fg(color).bg(SURFACE))
+            .ratio(percent / 100.0)
+            .label(""),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(detail).style(Style::default().fg(Color::Gray)),
         rows[2],
     );
 }
 
-fn render_monitor_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let mut lines = vec![
-        Line::styled("Groups", Style::default().fg(DIM)),
-        Line::styled(
-            format!("◆ {:<14} 1", clipped(&app.local_name, 14)),
-            Style::default().fg(AMBER).bold(),
-        ),
-    ];
-    for group in app.machine_groups.iter().take(4) {
-        lines.push(Line::styled(
-            format!("◇ {:<14} {}", group.name, group.host_ids.len()),
-            Style::default().fg(Color::Gray),
-        ));
-    }
-    lines.extend([
-        Line::from(""),
-        Line::styled("Quick view", Style::default().fg(DIM)),
-        Line::styled("○ Alerts          0", Style::default().fg(Color::Gray)),
-        Line::styled("= Services        --", Style::default().fg(Color::Gray)),
-    ]);
+fn render_system_pulse(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
+    let lines = host.snapshot.as_ref().map_or_else(
+        || {
+            vec![
+                Line::styled("Collecting system identity", Style::default().fg(ORANGE)),
+                Line::styled(
+                    "The first sample will appear here.",
+                    Style::default().fg(DIM),
+                ),
+            ]
+        },
+        |sample| {
+            vec![
+                Line::from(vec![
+                    Span::styled("uptime   ", Style::default().fg(DIM)),
+                    Span::styled(
+                        human_duration(Duration::from_secs(sample.uptime_secs)),
+                        Style::default().fg(TEXT).bold(),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("kernel   ", Style::default().fg(DIM)),
+                    Span::styled(
+                        clipped(&sample.kernel, 20),
+                        Style::default().fg(Color::Gray),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("agent    ", Style::default().fg(DIM)),
+                    Span::styled("● healthy", Style::default().fg(GREEN)),
+                ]),
+            ]
+        },
+    );
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::default()
-                .borders(Borders::RIGHT)
+                .title(Line::styled(
+                    " SYSTEM PULSE ",
+                    Style::default().fg(DIM).bold(),
+                ))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(LINE)),
+        ),
+        area,
+    );
+}
+
+fn render_monitor_placeholder(frame: &mut Frame<'_>, area: Rect, app: &App, host: &HostState) {
+    let sections = [
+        ("Overview", "Live health and resource history", AMBER),
+        (
+            "Processes",
+            "Inspect, sort and act on running processes",
+            CYAN,
+        ),
+        (
+            "Network",
+            "Interfaces, throughput and active connections",
+            GREEN,
+        ),
+        ("Storage", "Filesystems, devices and disk activity", ORANGE),
+        (
+            "Services",
+            "systemd and OpenRC services for this machine",
+            Color::Rgb(164, 143, 214),
+        ),
+        ("Containers", "Docker and Podman workloads", CYAN),
+        ("Logs", "Search and follow machine logs", Color::Gray),
+    ];
+    let (title, detail, color) = sections[app.monitor_selected.min(sections.len() - 1)];
+    let hostname = host
+        .snapshot
+        .as_ref()
+        .map_or(host.target.display_name.as_str(), |sample| {
+            sample.hostname.as_str()
+        });
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(title, Style::default().fg(color).bold()),
+                Span::styled(format!("    {hostname}"), Style::default().fg(DIM)),
+            ]),
+            Line::from(""),
+            Line::styled(detail, Style::default().fg(Color::Gray)),
+            Line::from(""),
+            Line::styled(
+                "This section is already part of the navigation model and will receive live data next.",
+                Style::default().fg(DIM),
+            ),
+        ])
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .title(" MACHINE VIEW ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(color)),
         ),
         area,
     );
@@ -1250,6 +1608,7 @@ fn clipped(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+#[allow(dead_code)]
 fn render_soft_metric(
     frame: &mut Frame<'_>,
     area: Rect,

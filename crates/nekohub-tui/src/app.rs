@@ -23,12 +23,22 @@ pub enum HomeFocus {
     Groups,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NavigationMotion {
+    pub from: usize,
+    pub to: usize,
+    pub frame: u8,
+    pub total_frames: u8,
+}
+
 #[derive(Debug)]
 pub struct HostState {
     pub target: HostTarget,
     pub snapshot: Option<HostSnapshot>,
     pub last_error: Option<String>,
     pub cpu_history: VecDeque<u64>,
+    pub network_rx_history: VecDeque<u64>,
+    pub network_tx_history: VecDeque<u64>,
 }
 
 impl HostState {
@@ -38,6 +48,8 @@ impl HostState {
             snapshot: None,
             last_error: None,
             cpu_history: VecDeque::with_capacity(120),
+            network_rx_history: VecDeque::with_capacity(120),
+            network_tx_history: VecDeque::with_capacity(120),
         }
     }
 
@@ -58,6 +70,8 @@ pub struct App {
     pub home_nav_selected: usize,
     pub home_selected: usize,
     pub settings_selected: usize,
+    pub monitor_selected: usize,
+    pub navigation_motion: Option<NavigationMotion>,
     pub background_enabled: bool,
     pub settings_notice: Option<String>,
     pub machine_groups: Vec<MachineGroup>,
@@ -90,6 +104,8 @@ impl App {
             home_nav_selected: 0,
             home_selected: 0,
             settings_selected: 0,
+            monitor_selected: 0,
+            navigation_motion: None,
             background_enabled: true,
             settings_notice: None,
             machine_groups,
@@ -128,6 +144,8 @@ impl App {
             home_nav_selected: 0,
             home_selected: 0,
             settings_selected: 0,
+            monitor_selected: 0,
+            navigation_motion: None,
             background_enabled: true,
             settings_notice: None,
             machine_groups: Vec::new(),
@@ -155,14 +173,17 @@ impl App {
     }
 
     pub fn start_monitoring(&mut self, target: HostTarget) {
+        let from = shell_navigation_index(self.view).unwrap_or(1);
         self.hosts = vec![HostState::new(target)];
         self.selected = 0;
+        self.monitor_selected = 0;
         self.by_id = self
             .hosts
             .iter()
             .enumerate()
             .map(|(index, host)| (host.target.id.clone(), index))
             .collect();
+        self.start_navigation_motion(from, 1, 10);
         self.view = View::Overview;
     }
 
@@ -179,6 +200,14 @@ impl App {
             host.cpu_history
                 .push_back(cpu.clamp(0.0, 100.0).round() as u64);
         }
+        if host.network_rx_history.len() == 120 {
+            host.network_rx_history.pop_front();
+            host.network_tx_history.pop_front();
+        }
+        host.network_rx_history
+            .push_back(snapshot.network.read_per_sec.max(0.0).round() as u64);
+        host.network_tx_history
+            .push_back(snapshot.network.write_per_sec.max(0.0).round() as u64);
         host.snapshot = Some(snapshot);
         host.last_error = None;
     }
@@ -207,11 +236,13 @@ impl App {
 
     pub fn open_detail(&mut self) {
         if !self.hosts.is_empty() {
+            self.start_navigation_motion(1, 1, 8);
             self.view = View::Detail;
         }
     }
 
     pub fn open_overview(&mut self) {
+        self.start_navigation_motion(1, 1, 8);
         self.view = View::Overview;
     }
 
@@ -220,6 +251,7 @@ impl App {
     }
 
     pub fn open_home(&mut self) {
+        let from = shell_navigation_index(self.view).unwrap_or(0);
         self.hosts.clear();
         self.by_id.clear();
         self.selected = 0;
@@ -227,6 +259,7 @@ impl App {
         self.home_nav_selected = 0;
         self.home_selected = 0;
         self.home_notice = None;
+        self.start_navigation_motion(from, 0, 8);
         self.view = View::Home;
     }
 
@@ -322,6 +355,8 @@ impl App {
     }
 
     pub fn open_settings(&mut self) {
+        let from = shell_navigation_index(self.view).unwrap_or(2);
+        self.start_navigation_motion(from, 2, 8);
         self.view = View::Settings;
     }
 
@@ -354,13 +389,18 @@ impl App {
     }
 
     pub fn open_remote_picker(&mut self) {
+        let from = shell_navigation_index(self.view).unwrap_or(1);
         self.remote_return_view = self.view;
+        self.start_navigation_motion(from, 1, 8);
         self.view = View::RemotePicker;
         self.remote_notice = None;
     }
 
     pub fn close_remote_picker(&mut self) {
-        self.view = self.remote_return_view;
+        let target = self.remote_return_view;
+        let to = shell_navigation_index(target).unwrap_or(0);
+        self.start_navigation_motion(1, to, 8);
+        self.view = target;
         self.remote_notice = None;
     }
 
@@ -384,6 +424,15 @@ impl App {
 
     pub fn advance_animation(&mut self) {
         self.animation_tick = self.animation_tick.wrapping_add(1);
+        let motion_finished = if let Some(motion) = &mut self.navigation_motion {
+            motion.frame = motion.frame.saturating_add(1);
+            motion.frame >= motion.total_frames
+        } else {
+            false
+        };
+        if motion_finished {
+            self.navigation_motion = None;
+        }
         if self.view == View::AgentSetup && self.setup_visible_progress < self.setup_target_progress
         {
             let remaining = self.setup_target_progress - self.setup_visible_progress;
@@ -419,6 +468,32 @@ impl App {
 
     pub fn online_count(&self) -> usize {
         self.hosts.iter().filter(|host| host.is_online()).count()
+    }
+
+    pub fn next_monitor_section(&mut self) {
+        self.monitor_selected = (self.monitor_selected + 1) % 7;
+    }
+
+    pub fn previous_monitor_section(&mut self) {
+        self.monitor_selected = self.monitor_selected.checked_sub(1).unwrap_or(6);
+    }
+
+    fn start_navigation_motion(&mut self, from: usize, to: usize, total_frames: u8) {
+        self.navigation_motion = Some(NavigationMotion {
+            from,
+            to,
+            frame: 0,
+            total_frames,
+        });
+    }
+}
+
+fn shell_navigation_index(view: View) -> Option<usize> {
+    match view {
+        View::Home | View::CreateGroup => Some(0),
+        View::RemotePicker | View::Overview | View::Detail => Some(1),
+        View::Settings => Some(2),
+        View::Welcome | View::AgentConfirm | View::AgentSetup => None,
     }
 }
 
@@ -510,5 +585,26 @@ mod tests {
         app.toggle_background();
         assert!(!app.background_enabled);
         assert!(app.settings_notice.is_some());
+    }
+
+    #[test]
+    fn top_level_navigation_animates_and_settles() {
+        let mut app = App::home(Vec::new(), Vec::new());
+        app.open_settings();
+        let motion = app.navigation_motion.expect("navigation should animate");
+        assert_eq!((motion.from, motion.to), (0, 2));
+        for _ in 0..motion.total_frames {
+            app.advance_animation();
+        }
+        assert!(app.navigation_motion.is_none());
+    }
+
+    #[test]
+    fn machine_sections_wrap() {
+        let mut app = App::monitoring(vec![HostTarget::from_alias("local")]);
+        app.previous_monitor_section();
+        assert_eq!(app.monitor_selected, 6);
+        app.next_monitor_section();
+        assert_eq!(app.monitor_selected, 0);
     }
 }

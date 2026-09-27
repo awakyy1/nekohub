@@ -241,7 +241,7 @@ async fn run_event_loop(
 
     let mut terminal = terminal::TerminalGuard::enter()?;
     let mut input = EventStream::new();
-    let mut redraw = tokio::time::interval(Duration::from_millis(90));
+    let mut redraw = tokio::time::interval(Duration::from_millis(33));
     redraw.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let result = loop {
@@ -435,9 +435,11 @@ async fn run_event_loop(
                             _ => {}
                         },
                         View::Overview => match key.code {
-                            KeyCode::Down | KeyCode::Char('j') => app.next(),
-                            KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                            KeyCode::Enter => app.open_detail(),
+                            KeyCode::Down | KeyCode::Char('j') => app.next_monitor_section(),
+                            KeyCode::Up | KeyCode::Char('k') => app.previous_monitor_section(),
+                            KeyCode::Char('n') => app.next(),
+                            KeyCode::Char('p') => app.previous(),
+                            KeyCode::Enter if app.monitor_selected == 0 => app.open_detail(),
                             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.open_home(),
                             KeyCode::Char('r') => { let _ = refresh_tx.send(()); },
                             _ => {}
