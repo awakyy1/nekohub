@@ -244,7 +244,7 @@ async fn run_event_loop(
     }
 
     let mut terminal = terminal::TerminalGuard::enter()?;
-    let mut input = EventStream::new();
+    let mut events = EventStream::new();
     let mut redraw = tokio::time::interval(Duration::from_millis(33));
     redraw.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -265,7 +265,7 @@ async fn run_event_loop(
                 CollectionEvent::SetupComplete => app.open_home(),
                 CollectionEvent::SetupError { message } => app.fail_agent_setup(message),
             },
-            Some(input) = input.next() => match input? {
+            Some(input) = events.next() => match input? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if matches!(key.code, KeyCode::Char('q'))
                         && !matches!(app.view, View::CreateGroup | View::RemoteInstall)
@@ -428,7 +428,7 @@ async fn run_event_loop(
                                     terminal.suspend()?;
                                     let install_result = install_remote_agent(&target).await;
                                     terminal.resume()?;
-                                    input = EventStream::new();
+                                    events = EventStream::new();
                                     match install_result {
                                         Ok(()) => {
                                             app.complete_remote_install(&target);
@@ -469,9 +469,7 @@ async fn run_event_loop(
                                 app.previous_theme();
                                 save_preferences(app).await;
                             }
-                            KeyCode::Right | KeyCode::Char('l')
-                            | KeyCode::Enter
-                            | KeyCode::Char(' ')
+                            KeyCode::Right | KeyCode::Char('l' | ' ') | KeyCode::Enter
                                 if app.settings_selected == 1 =>
                             {
                                 app.next_theme();
@@ -521,7 +519,7 @@ async fn save_preferences(app: &mut App) {
 }
 
 async fn install_remote_agent(target: &str) -> Result<(), String> {
-    const REMOTE_INSTALL: &str = r#"set -eu
+    const REMOTE_INSTALL: &str = r"set -eu
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL https://awakyy1.github.io/nekohub/install.sh | sudo sh
 elif command -v wget >/dev/null 2>&1; then
@@ -535,7 +533,7 @@ if command -v systemctl >/dev/null 2>&1; then
   sudo systemctl enable --now nekohub-agent.service
   sudo systemctl is-active --quiet nekohub-agent.service
 fi
-echo 'nekoHub agent is ready.'"#;
+echo 'nekoHub agent is ready.'";
 
     println!("\nConnecting to {target}…");
     println!("SSH or sudo may ask for a password. nekoHub never stores it.\n");
