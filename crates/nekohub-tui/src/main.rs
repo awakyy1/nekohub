@@ -396,12 +396,22 @@ async fn run_event_loop(
                             KeyCode::Down | KeyCode::Char('j') => app.next_remote(),
                             KeyCode::Up | KeyCode::Char('k') => app.previous_remote(),
                             KeyCode::Esc => app.close_remote_picker(),
-                            KeyCode::Enter => {
-                                app.explain_remote_pairing();
+                            KeyCode::Enter if app.remote_selected == 0 => {
+                                if let Some(collector) = local_collector.as_ref() {
+                                    let target = local_target();
+                                    app.start_monitoring(target.clone());
+                                    spawn_worker(
+                                        &mut workers, target, Arc::clone(collector), refresh_every,
+                                        &event_tx, &refresh_tx, &shutdown_rx,
+                                    );
+                                }
                             }
+                            KeyCode::Enter => app.explain_remote_pairing(),
                             _ => {}
                         },
                         View::Settings => match key.code {
+                            KeyCode::Down | KeyCode::Char('j') => app.next_setting(),
+                            KeyCode::Up | KeyCode::Char('k') => app.previous_setting(),
                             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.open_home(),
                             _ => {}
                         },

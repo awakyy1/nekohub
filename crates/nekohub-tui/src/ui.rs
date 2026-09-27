@@ -158,29 +158,15 @@ fn render_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(8), Constraint::Length(1)])
         .split(content);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled("Your machine groups", Style::default().fg(TEXT).bold()),
-            Line::styled(
-                "Keep related machines together. This machine always has its own space.",
-                Style::default().fg(DIM),
-            ),
-        ]),
-        rows[0],
-    );
-    render_group_grid(frame, rows[1], app);
+    render_group_grid(frame, rows[0], app);
     if let Some(notice) = app.home_notice.as_deref() {
         frame.render_widget(
             Paragraph::new(notice)
                 .style(Style::default().fg(ORANGE))
                 .alignment(Alignment::Center),
-            rows[2],
+            rows[1],
         );
     }
 }
@@ -303,36 +289,31 @@ fn render_machine_strip(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_group_grid(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let columns = if area.width >= 120 {
-        4
-    } else if area.width >= 82 {
-        3
-    } else {
-        2
-    };
-    let visible_rows = usize::from((area.height / 8).max(1));
+    const CARD_WIDTH: u16 = 30;
+    const CARD_HEIGHT: u16 = 8;
+    const COLUMN_GAP: u16 = 2;
+    const ROW_GAP: u16 = 1;
+    let columns = usize::from(((area.width + COLUMN_GAP) / (CARD_WIDTH + COLUMN_GAP)).max(1));
+    let visible_rows = usize::from(((area.height + ROW_GAP) / (CARD_HEIGHT + ROW_GAP)).max(1));
     let capacity = columns * visible_rows;
     let selected_page = app.home_selected / capacity;
     let first = selected_page * capacity;
     let last = (first + capacity).min(app.home_item_count());
-    let row_count = (last - first).div_ceil(columns).max(1);
-    let row_areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Ratio(1, row_count as u32); row_count])
-        .spacing(1)
-        .split(area);
-    for row in 0..row_count {
-        let column_areas = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(vec![Constraint::Ratio(1, columns as u32); columns])
-            .spacing(2)
-            .split(row_areas[row]);
-        for (column, card_area) in column_areas.iter().enumerate() {
+    for row in 0..visible_rows {
+        for column in 0..columns {
             let index = first + row * columns + column;
             if index >= last {
                 break;
             }
-            render_group_card(frame, *card_area, app, index);
+            let x = area.x + u16::try_from(column).unwrap_or_default() * (CARD_WIDTH + COLUMN_GAP);
+            let y = area.y + u16::try_from(row).unwrap_or_default() * (CARD_HEIGHT + ROW_GAP);
+            let card_area = Rect::new(
+                x,
+                y,
+                CARD_WIDTH.min(area.right().saturating_sub(x)),
+                CARD_HEIGHT.min(area.bottom().saturating_sub(y)),
+            );
+            render_group_card(frame, card_area, app, index);
         }
     }
 }
@@ -475,87 +456,82 @@ fn render_create_group(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let inner = render_app_chrome(frame, area, app, 2, "Esc home  ·  m machines  ·  q quit");
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(12)])
-        .split(inner);
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled("Settings", Style::default().fg(TEXT).bold()),
-            Line::from(""),
-            Line::styled(
-                "Control how nekoHub looks, connects and keeps data.",
-                Style::default().fg(DIM),
-            ),
-        ]),
-        rows[0],
+    let inner = render_app_chrome(
+        frame,
+        area,
+        app,
+        2,
+        "↑↓ select  ·  Esc home  ·  m machines  ·  q quit",
     );
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[1]);
-    let left = Layout::default()
+        .constraints([
+            Constraint::Length(30),
+            Constraint::Length(2),
+            Constraint::Min(30),
+        ])
+        .split(inner);
+    let sections = [
+        (
+            "Appearance & themes",
+            "Palette, motion and community themes",
+            ORANGE,
+        ),
+        ("Agents", "Local service and remote pairing", GREEN),
+        (
+            "Machine groups",
+            "Create, rename and organize machine groups",
+            AMBER,
+        ),
+        (
+            "Data & integrations",
+            "Prometheus, history and retention",
+            CYAN,
+        ),
+    ];
+    let sidebar = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints(vec![Constraint::Length(3); sections.len()])
         .split(columns[0]);
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(columns[1]);
-    render_settings_card(
-        frame,
-        left[0],
-        "Appearance & themes",
-        "Palette, motion and community themes",
-        ORANGE,
-    );
-    render_settings_card(
-        frame,
-        left[1],
-        "Agents",
-        "Local service and future remote pairing",
-        GREEN,
-    );
-    render_settings_card(
-        frame,
-        right[0],
-        "Machine groups",
-        &format!("{} remote hosts discovered", app.remote_hosts.len()),
-        AMBER,
-    );
-    render_settings_card(
-        frame,
-        right[1],
-        "Data & integrations",
-        "Prometheus, history and retention",
-        CYAN,
-    );
-}
-
-fn render_settings_card(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    title: &str,
-    detail: &str,
-    color: Color,
-) {
+    for (index, (title, _, color)) in sections.iter().enumerate() {
+        let selected = app.settings_selected == index;
+        frame.render_widget(
+            Paragraph::new(format!("{} {title}", if selected { "›" } else { " " }))
+                .style(if selected {
+                    Style::default().fg(INK).bg(*color).bold()
+                } else {
+                    Style::default().fg(Color::Gray)
+                })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(if selected { *color } else { DIM })),
+                ),
+            sidebar[index],
+        );
+    }
+    let (title, detail, color) = sections[app.settings_selected];
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled(title.to_owned(), Style::default().fg(color).bold()),
+            Line::styled(title, Style::default().fg(color).bold()),
             Line::from(""),
-            Line::styled(detail.to_owned(), Style::default().fg(Color::Gray)),
+            Line::styled(detail, Style::default().fg(Color::Gray)),
             Line::from(""),
-            Line::styled("COMING NEXT", Style::default().fg(DIM).bold()),
+            Line::styled(
+                "Configuration options are coming next.",
+                Style::default().fg(DIM),
+            ),
         ])
         .wrap(Wrap { trim: true })
         .block(
             Block::default()
+                .title(" SETTINGS ")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(DIM)),
+                .border_style(Style::default().fg(color)),
         ),
-        area,
+        columns[2],
     );
 }
 
@@ -835,26 +811,58 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
         return;
     }
-    let rows = app.remote_hosts.iter().enumerate().map(|(index, host)| {
-        let selected = index == app.remote_selected;
-        Row::new([if selected { "›" } else { " " }, host.alias.as_str()]).style(if selected {
+    let local_selected = app.remote_selected == 0;
+    let local = Row::new([
+        if local_selected { "›" } else { " " },
+        "This machine",
+        "Local agent",
+        "This machine",
+        "● READY",
+    ])
+    .style(if local_selected {
+        Style::default().fg(INK).bg(AMBER).bold()
+    } else {
+        Style::default().fg(Color::Gray)
+    });
+    let remote_rows = app.remote_hosts.iter().enumerate().map(|(index, host)| {
+        let selected = index + 1 == app.remote_selected;
+        Row::new([
+            if selected { "›" } else { " " },
+            host.display_name.as_str(),
+            "SSH inventory",
+            "Unassigned",
+            "○ PAIRING NEEDED",
+        ])
+        .style(if selected {
             Style::default().fg(INK).bg(AMBER).bold()
         } else {
             Style::default().fg(Color::Gray)
         })
     });
-    let table = Table::new(rows, [Constraint::Length(2), Constraint::Min(10)])
-        .header(
-            Row::new(["", "DISCOVERED HOST"])
-                .style(Style::default().fg(DIM).bold())
-                .bottom_margin(1),
-        )
-        .block(
-            Block::default()
-                .title(" Inventory from ~/.ssh/config ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(DIM)),
-        );
+    let table = Table::new(
+        std::iter::once(local).chain(remote_rows),
+        [
+            Constraint::Length(2),
+            Constraint::Min(18),
+            Constraint::Length(15),
+            Constraint::Length(16),
+            Constraint::Length(18),
+        ],
+    )
+    .header(
+        Row::new(["", "MACHINE", "SOURCE", "GROUP", "STATUS"])
+            .style(Style::default().fg(DIM).bold())
+            .bottom_margin(1),
+    )
+    .block(
+        Block::default()
+            .title(format!(
+                " REGISTERED MACHINES  {} ",
+                app.remote_hosts.len() + 1
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(DIM)),
+    );
     frame.render_widget(table, panel);
 }
 

@@ -56,6 +56,7 @@ pub struct App {
     pub home_focus: HomeFocus,
     pub home_nav_selected: usize,
     pub home_selected: usize,
+    pub settings_selected: usize,
     pub machine_groups: Vec<MachineGroup>,
     pub group_draft: String,
     pub group_error: Option<String>,
@@ -84,6 +85,7 @@ impl App {
             home_focus: HomeFocus::Groups,
             home_nav_selected: 0,
             home_selected: 0,
+            settings_selected: 0,
             machine_groups,
             group_draft: String::new(),
             group_error: None,
@@ -118,6 +120,7 @@ impl App {
             home_focus: HomeFocus::Groups,
             home_nav_selected: 0,
             home_selected: 0,
+            settings_selected: 0,
             machine_groups: Vec::new(),
             group_draft: String::new(),
             group_error: None,
@@ -313,6 +316,14 @@ impl App {
         self.view = View::Settings;
     }
 
+    pub fn next_setting(&mut self) {
+        self.settings_selected = (self.settings_selected + 1) % 4;
+    }
+
+    pub fn previous_setting(&mut self) {
+        self.settings_selected = self.settings_selected.checked_sub(1).unwrap_or(3);
+    }
+
     pub fn open_agent_confirmation(&mut self) {
         self.agent_confirm_selected = 1;
         self.view = View::AgentConfirm;
@@ -370,18 +381,14 @@ impl App {
     }
 
     pub fn next_remote(&mut self) {
-        if !self.remote_hosts.is_empty() {
-            self.remote_selected = (self.remote_selected + 1) % self.remote_hosts.len();
-        }
+        self.remote_selected = (self.remote_selected + 1) % (self.remote_hosts.len() + 1);
     }
 
     pub fn previous_remote(&mut self) {
-        if !self.remote_hosts.is_empty() {
-            self.remote_selected = self
-                .remote_selected
-                .checked_sub(1)
-                .unwrap_or(self.remote_hosts.len() - 1);
-        }
+        self.remote_selected = self
+            .remote_selected
+            .checked_sub(1)
+            .unwrap_or(self.remote_hosts.len());
     }
 
     pub fn explain_remote_pairing(&mut self) {
