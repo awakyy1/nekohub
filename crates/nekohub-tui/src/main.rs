@@ -121,7 +121,7 @@ fn local_target() -> HostTarget {
     HostTarget {
         id: "local".into(),
         alias: "localhost".into(),
-        display_name: "This machine".into(),
+        display_name: app::local_machine_name(),
         tags: vec!["local".into()],
     }
 }

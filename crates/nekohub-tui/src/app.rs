@@ -48,6 +48,7 @@ impl HostState {
 
 #[derive(Debug)]
 pub struct App {
+    pub local_name: String,
     pub hosts: Vec<HostState>,
     pub selected: usize,
     pub view: View,
@@ -77,6 +78,7 @@ pub struct App {
 impl App {
     pub fn new(remote_hosts: Vec<HostTarget>, machine_groups: Vec<MachineGroup>) -> Self {
         Self {
+            local_name: local_machine_name(),
             hosts: Vec::new(),
             selected: 0,
             view: View::Welcome,
@@ -112,6 +114,7 @@ impl App {
             .map(|(index, host)| (host.target.id.clone(), index))
             .collect();
         Self {
+            local_name: local_machine_name(),
             hosts,
             selected: 0,
             view: View::Overview,
@@ -400,6 +403,28 @@ impl App {
     pub fn online_count(&self) -> usize {
         self.hosts.iter().filter(|host| host.is_online()).count()
     }
+}
+
+pub fn local_machine_name() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .and_then(|name| non_empty_machine_name(&name))
+        .or_else(|| {
+            std::env::var("HOSTNAME")
+                .ok()
+                .and_then(|name| non_empty_machine_name(&name))
+        })
+        .or_else(|| {
+            std::env::var("COMPUTERNAME")
+                .ok()
+                .and_then(|name| non_empty_machine_name(&name))
+        })
+        .unwrap_or_else(|| "Local machine".to_owned())
+}
+
+fn non_empty_machine_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 #[cfg(test)]

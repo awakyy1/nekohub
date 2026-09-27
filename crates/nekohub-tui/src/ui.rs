@@ -260,7 +260,7 @@ fn render_home_header(frame: &mut Frame<'_>, area: Rect, app: &App, active_nav: 
 fn render_machine_strip(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut spans = vec![
         Span::styled(" ● ", Style::default().fg(GREEN)),
-        Span::styled("This machine", Style::default().fg(TEXT).bold()),
+        Span::styled(app.local_name.as_str(), Style::default().fg(TEXT).bold()),
     ];
     for host in &app.remote_hosts {
         spans.push(Span::styled("    ○ ", Style::default().fg(DIM)));
@@ -324,7 +324,7 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
     let is_add = index + 1 == app.home_item_count();
     let (title, count, state, accent) = if index == 0 {
         (
-            "This machine".to_owned(),
+            app.local_name.clone(),
             "1 machine".to_owned(),
             "● local · ready".to_owned(),
             GREEN,
@@ -802,9 +802,9 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let local_selected = app.remote_selected == 0;
     let local = Row::new([
         if local_selected { "›" } else { " " },
-        "This machine",
+        app.local_name.as_str(),
         "Local agent",
-        "This machine",
+        "Local",
         "● ready",
     ])
     .style(if local_selected {
@@ -1058,7 +1058,10 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
 fn render_monitor_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let mut lines = vec![
         Line::styled("Groups", Style::default().fg(DIM)),
-        Line::styled("◆ This machine    1", Style::default().fg(AMBER).bold()),
+        Line::styled(
+            format!("◆ {:<14} 1", truncate(&app.local_name, 14)),
+            Style::default().fg(AMBER).bold(),
+        ),
     ];
     for group in app.machine_groups.iter().take(4) {
         lines.push(Line::styled(
