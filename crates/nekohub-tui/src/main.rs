@@ -16,7 +16,9 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use nekohub_agent::{AgentCollector, SshAgentCollector};
 use nekohub_core::{Collector, HostSnapshot, HostTarget, Inventory, RateTracker};
-use ssh_terminal::{SshTerminalSession, TerminalEvent, embedded_size, encode_key};
+use ssh_terminal::{
+    SshTerminalSession, TerminalEvent, embedded_size, encode_key, is_terminal_close_key,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::{broadcast, mpsc, watch},
@@ -249,6 +251,7 @@ async fn run_tui(
     app.font_profile = preferences.font_profile;
     app.custom_theme = preferences.custom_theme;
     app.local_alias = preferences.local_alias;
+    app.last_machine_id = preferences.last_machine_id;
     if let Some(alias) = app.local_alias.as_ref() {
         app.local_name.clone_from(alias);
     }
@@ -333,6 +336,7 @@ async fn run_event_loop(
                             .cloned()
                             .unwrap_or(target);
                         app.start_monitoring(target.clone());
+                        save_preferences(app).await;
                         app.view = View::RemoteInstallProgress;
                         spawn_worker(
                             &mut workers, target, collector, refresh_every,
@@ -368,9 +372,7 @@ async fn run_event_loop(
             Some(input) = events.next() => match input? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if app.view == View::Terminal {
-                        if matches!(key.code, KeyCode::Char(']'))
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
+                        if is_terminal_close_key(key) {
                             ssh_session = None;
                             app.close_terminal();
                         } else if let Some(session) = ssh_session.as_mut() {
@@ -492,25 +494,26 @@ async fn run_event_loop(
                                     _ => app.open_settings(),
                                 }
                             }
-                            KeyCode::Enter if app.home_focus == HomeFocus::Machines
-                                && app.home_machine_selected == 0 =>
-                            {
-                                if let Some(collector) = local_collector.as_ref() {
-                                    let target = local_target_named(&app.local_name);
-                                    app.start_monitoring(target.clone());
-                                    spawn_worker(
-                                        &mut workers, target, Arc::clone(collector), refresh_every,
-                                        &event_tx, &refresh_tx, &shutdown_rx,
-                                    );
-                                }
-                            }
                             KeyCode::Enter if app.home_focus == HomeFocus::Machines => {
-                                app.remote_selected = app.home_machine_selected;
-                                if app.selected_installed_remote().is_some() {
-                                    app.begin_remote_connect();
+                                let machine_index = app.selected_home_machine_index();
+                                if machine_index == 0 {
+                                    if let Some(collector) = local_collector.as_ref() {
+                                        let target = local_target_named(&app.local_name);
+                                        app.start_monitoring(target.clone());
+                                        save_preferences(app).await;
+                                        spawn_worker(
+                                            &mut workers, target, Arc::clone(collector), refresh_every,
+                                            &event_tx, &refresh_tx, &shutdown_rx,
+                                        );
+                                    }
                                 } else {
-                                    app.open_remote_picker();
-                                    app.remote_selected = app.home_machine_selected;
+                                    app.remote_selected = machine_index;
+                                    if app.selected_installed_remote().is_some() {
+                                        app.begin_remote_connect();
+                                    } else {
+                                        app.open_remote_picker();
+                                        app.remote_selected = machine_index;
+                                    }
                                 }
                             }
                             KeyCode::Enter if app.home_selected + 1 == app.home_item_count() => {
@@ -537,6 +540,36 @@ async fn run_event_loop(
                         },
                         View::GroupDetail => match key.code {
                             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.close_group(),
+                            KeyCode::Down | KeyCode::Char('j') => app.next_group_machine(),
+                            KeyCode::Up | KeyCode::Char('k') => app.previous_group_machine(),
+                            KeyCode::Enter => {
+                                let selected = app.selected_group_machine_id().map(str::to_owned);
+                                if selected.as_deref() == Some("local") {
+                                    if let Some(collector) = local_collector.as_ref() {
+                                        let target = local_target_named(&app.local_name);
+                                        app.start_monitoring(target.clone());
+                                        save_preferences(app).await;
+                                        spawn_worker(
+                                            &mut workers, target, Arc::clone(collector), refresh_every,
+                                            &event_tx, &refresh_tx, &shutdown_rx,
+                                        );
+                                    }
+                                } else if let Some(id) = selected {
+                                    if let Some(index) = app
+                                        .remote_hosts
+                                        .iter()
+                                        .position(|machine| machine.id == id)
+                                    {
+                                        app.remote_selected = index + 1;
+                                        if app.selected_installed_remote().is_some() {
+                                            app.begin_remote_connect();
+                                        } else {
+                                            app.open_remote_picker();
+                                            app.remote_selected = index + 1;
+                                        }
+                                    }
+                                }
+                            }
                             _ => {}
                         },
                         View::RemotePicker => match key.code {
@@ -547,6 +580,7 @@ async fn run_event_loop(
                                 if let Some(collector) = local_collector.as_ref() {
                                     let target = local_target_named(&app.local_name);
                                     app.start_monitoring(target.clone());
+                                    save_preferences(app).await;
                                     spawn_worker(
                                         &mut workers, target, Arc::clone(collector), refresh_every,
                                         &event_tx, &refresh_tx, &shutdown_rx,
@@ -629,6 +663,7 @@ async fn run_event_loop(
                                         )
                                     );
                                     app.start_monitoring(target.clone());
+                                    save_preferences(app).await;
                                     spawn_worker(
                                         &mut workers, target, collector, refresh_every,
                                         &event_tx, &refresh_tx, &shutdown_rx,
@@ -816,6 +851,7 @@ async fn save_preferences(app: &mut App) {
         font_profile: app.font_profile,
         custom_theme: app.custom_theme.clone(),
         local_alias: app.local_alias.clone(),
+        last_machine_id: app.last_machine_id.clone(),
     };
     if let Err(message) = preferences::save(&preferences::state_path(), updated).await {
         app.settings_notice = Some(message);

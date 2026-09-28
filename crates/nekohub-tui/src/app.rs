@@ -84,6 +84,7 @@ impl HostState {
 pub struct App {
     pub local_name: String,
     pub local_alias: Option<String>,
+    pub last_machine_id: Option<String>,
     pub hosts: Vec<HostState>,
     pub selected: usize,
     pub view: View,
@@ -110,6 +111,7 @@ pub struct App {
     pub group_draft: String,
     pub group_error: Option<String>,
     pub active_group: usize,
+    pub group_machine_selected: usize,
     pub group_assign_selected: usize,
     pub home_notice: Option<String>,
     pub remote_hosts: Vec<HostTarget>,
@@ -142,6 +144,7 @@ impl App {
         Self {
             local_name: local_machine_name(),
             local_alias: None,
+            last_machine_id: None,
             hosts: Vec::new(),
             selected: 0,
             view: View::Welcome,
@@ -168,6 +171,7 @@ impl App {
             group_draft: String::new(),
             group_error: None,
             active_group: 0,
+            group_machine_selected: 0,
             group_assign_selected: 0,
             home_notice: None,
             remote_hosts,
@@ -206,6 +210,7 @@ impl App {
         Self {
             local_name: local_machine_name(),
             local_alias: None,
+            last_machine_id: None,
             hosts,
             selected: 0,
             view: View::Overview,
@@ -232,6 +237,7 @@ impl App {
             group_draft: String::new(),
             group_error: None,
             active_group: 0,
+            group_machine_selected: 0,
             group_assign_selected: 0,
             home_notice: None,
             remote_hosts: Vec::new(),
@@ -268,6 +274,7 @@ impl App {
 
     pub fn start_monitoring(&mut self, target: HostTarget) {
         let from = shell_navigation_index(self.view).unwrap_or(1);
+        self.last_machine_id = Some(target.id.clone());
         self.hosts = vec![HostState::new(target)];
         self.selected = 0;
         self.monitor_selected = 0;
@@ -405,6 +412,32 @@ impl App {
             .unwrap_or(self.remote_hosts.len());
     }
 
+    pub fn home_machine_order(&self) -> Vec<usize> {
+        let mut order = (0..=self.remote_hosts.len()).collect::<Vec<_>>();
+        let recent = self.last_machine_id.as_deref().and_then(|last_id| {
+            if last_id == "local" {
+                Some(0)
+            } else {
+                self.remote_hosts
+                    .iter()
+                    .position(|machine| machine.id == last_id)
+                    .map(|index| index + 1)
+            }
+        });
+        if let Some(recent) = recent {
+            order.retain(|index| *index != recent);
+            order.insert(0, recent);
+        }
+        order
+    }
+
+    pub fn selected_home_machine_index(&self) -> usize {
+        self.home_machine_order()
+            .get(self.home_machine_selected)
+            .copied()
+            .unwrap_or_default()
+    }
+
     pub fn next_home_nav(&mut self) {
         self.home_nav_selected = (self.home_nav_selected + 1) % 3;
     }
@@ -466,12 +499,53 @@ impl App {
     pub fn open_group(&mut self) {
         if self.home_selected < self.machine_groups.len() {
             self.active_group = self.home_selected;
+            self.group_machine_selected = self
+                .last_machine_id
+                .as_ref()
+                .and_then(|last_id| {
+                    self.machine_groups[self.active_group]
+                        .host_ids
+                        .iter()
+                        .position(|id| id == last_id)
+                })
+                .unwrap_or_default();
             self.view = View::GroupDetail;
         }
     }
 
     pub fn close_group(&mut self) {
         self.view = View::Home;
+    }
+
+    pub fn next_group_machine(&mut self) {
+        let count = self
+            .machine_groups
+            .get(self.active_group)
+            .map_or(0, |group| group.host_ids.len());
+        if count > 0 {
+            self.group_machine_selected = (self.group_machine_selected + 1) % count;
+        }
+    }
+
+    pub fn previous_group_machine(&mut self) {
+        let count = self
+            .machine_groups
+            .get(self.active_group)
+            .map_or(0, |group| group.host_ids.len());
+        if count > 0 {
+            self.group_machine_selected = self
+                .group_machine_selected
+                .checked_sub(1)
+                .unwrap_or(count - 1);
+        }
+    }
+
+    pub fn selected_group_machine_id(&self) -> Option<&str> {
+        self.machine_groups
+            .get(self.active_group)?
+            .host_ids
+            .get(self.group_machine_selected)
+            .map(String::as_str)
     }
 
     pub fn begin_group_assignment(&mut self) {
@@ -926,12 +1000,17 @@ impl App {
         self.remote_password_draft.clear();
         self.remote_install_field = 1;
         self.remote_install_error = None;
+        self.remote_return_view = self.view;
         self.view = View::RemoteConnect;
     }
 
     pub fn cancel_remote_connect(&mut self) {
         self.remote_password_draft.clear();
-        self.view = View::RemotePicker;
+        self.view = self.remote_return_view;
+    }
+
+    pub const fn remote_return_view(&self) -> View {
+        self.remote_return_view
     }
 
     pub fn remote_install_target(&mut self) -> Result<String, String> {
@@ -1168,6 +1247,38 @@ mod tests {
         assert_eq!(app.home_focus, HomeFocus::Groups);
         app.previous_home_focus();
         assert_eq!(app.home_focus, HomeFocus::Machines);
+    }
+
+    #[test]
+    fn most_recent_machine_is_first_on_home_shelf() {
+        let remotes = vec![
+            HostTarget::from_alias("edge-01"),
+            HostTarget::from_alias("edge-02"),
+        ];
+        let mut app = App::home(remotes, Vec::new());
+        app.start_monitoring(HostTarget::from_alias("edge-02"));
+        app.open_home();
+
+        assert_eq!(app.home_machine_order(), [2, 0, 1]);
+        assert_eq!(app.selected_home_machine_index(), 2);
+    }
+
+    #[test]
+    fn group_machines_can_be_selected_for_monitoring() {
+        let groups = vec![MachineGroup {
+            name: "Production".into(),
+            host_ids: vec!["local".into(), "edge-01".into()],
+        }];
+        let mut app = App::home(vec![HostTarget::from_alias("edge-01")], groups);
+        app.open_group();
+
+        assert_eq!(app.selected_group_machine_id(), Some("local"));
+        app.next_group_machine();
+        assert_eq!(app.selected_group_machine_id(), Some("edge-01"));
+        app.next_group_machine();
+        assert_eq!(app.selected_group_machine_id(), Some("local"));
+        app.previous_group_machine();
+        assert_eq!(app.selected_group_machine_id(), Some("edge-01"));
     }
 
     #[test]

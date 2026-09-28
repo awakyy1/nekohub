@@ -324,6 +324,11 @@ pub fn encode_key(key: KeyEvent) -> Vec<u8> {
     encoded
 }
 
+pub fn is_terminal_close_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::F(10))
+        || matches!(key.code, KeyCode::Char(']')) && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
 fn pty_size(rows: u16, cols: u16) -> PtySize {
     PtySize {
         rows,
@@ -351,6 +356,22 @@ mod tests {
             encode_key(KeyEvent::new(KeyCode::Char('ç'), KeyModifiers::NONE)),
             "ç".as_bytes()
         );
+    }
+
+    #[test]
+    fn recognizes_reliable_terminal_close_shortcuts() {
+        assert!(is_terminal_close_key(KeyEvent::new(
+            KeyCode::F(10),
+            KeyModifiers::NONE
+        )));
+        assert!(is_terminal_close_key(KeyEvent::new(
+            KeyCode::Char(']'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!is_terminal_close_key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE
+        )));
     }
 
     #[test]

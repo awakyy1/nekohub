@@ -98,7 +98,14 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
             return;
         }
         View::RemoteConnect => {
-            render_remote_picker(frame, frame.area(), app);
+            match app.remote_return_view() {
+                View::Home => render_home(frame, frame.area(), app),
+                View::GroupDetail => {
+                    render_home(frame, frame.area(), app);
+                    render_group_detail(frame, frame.area(), app);
+                }
+                _ => render_remote_picker(frame, frame.area(), app),
+            }
             render_remote_connect(frame, frame.area(), app);
             return;
         }
@@ -124,7 +131,7 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
         View::Overview | View::Detail | View::TerminalPassword | View::Terminal => {}
     }
     let footer = if app.view == View::Terminal {
-        "Ctrl+] close terminal  ·  remote input is sent directly over SSH"
+        "F10 close terminal  ·  Ctrl+] alternative  ·  input goes directly over SSH"
     } else if app.view == View::TerminalPassword {
         "Type password  ·  Enter connect  ·  Esc cancel"
     } else {
@@ -437,30 +444,33 @@ fn render_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_home_machine_shelf(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let mut machines = vec![(&app.local_name, true, true)];
-    machines.extend(app.remote_hosts.iter().map(|host| {
-        (
-            &host.display_name,
-            false,
-            host.tags.iter().any(|tag| tag == INSTALLED_TAG),
-        )
-    }));
-    let visible = usize::from(area.width / 24).max(1).min(machines.len());
+    let machine_order = app.home_machine_order();
+    let visible = usize::from(area.width / 24).max(1).min(machine_order.len());
     let first = app
         .home_machine_selected
         .saturating_sub(visible / 2)
-        .min(machines.len().saturating_sub(visible));
+        .min(machine_order.len().saturating_sub(visible));
     let last = first + visible;
     let cards = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(vec![Constraint::Length(23); visible])
         .split(area);
     for (card_index, index) in (first..last).enumerate() {
-        let (name, local, installed) = machines[index];
+        let machine_index = machine_order[index];
+        let (name, local, installed) = if machine_index == 0 {
+            (&app.local_name, true, true)
+        } else {
+            let host = &app.remote_hosts[machine_index - 1];
+            (
+                &host.display_name,
+                false,
+                host.tags.iter().any(|tag| tag == INSTALLED_TAG),
+            )
+        };
         let selected = app.home_focus == HomeFocus::Machines && app.home_machine_selected == index;
         let title = match (
             card_index == 0 && first > 0,
-            card_index + 1 == visible && last < machines.len(),
+            card_index + 1 == visible && last < machine_order.len(),
         ) {
             (true, true) => " ‹ MACHINES › ",
             (true, false) => " ‹ MACHINES ",
@@ -936,10 +946,26 @@ fn render_group_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         height,
     );
     frame.render_widget(Clear, modal);
+    let selected = app
+        .group_machine_selected
+        .min(group.host_ids.len().saturating_sub(1));
+    let capacity = usize::from(modal.height.saturating_sub(8)).max(1);
+    let first = selected
+        .saturating_sub(capacity / 2)
+        .min(group.host_ids.len().saturating_sub(capacity));
+    let last = (first + capacity).min(group.host_ids.len());
     let mut lines = vec![
         Line::styled(group.name.as_str(), Style::default().fg(AMBER).bold()),
         Line::styled(
-            format!("{} machines", group.host_ids.len()),
+            format!(
+                "{} machines{}",
+                group.host_ids.len(),
+                if group.host_ids.is_empty() {
+                    String::new()
+                } else {
+                    format!("    selected {}/{}", selected + 1, group.host_ids.len())
+                }
+            ),
             Style::default().fg(DIM),
         ),
         Line::from(""),
@@ -950,29 +976,34 @@ fn render_group_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(Color::Gray),
         ));
     } else {
-        for id in &group.host_ids {
-            let name = if id == "local" {
-                app.local_name.as_str()
-            } else {
-                app.remote_hosts
-                    .iter()
-                    .find(|machine| &machine.id == id)
-                    .map_or(id.as_str(), |machine| machine.display_name.as_str())
-            };
-            lines.push(Line::from(vec![
-                Span::styled("  ●  ", Style::default().fg(GREEN)),
-                Span::styled(name, Style::default().fg(TEXT).bold()),
-            ]));
+        if first > 0 {
+            lines.push(Line::styled(
+                "              ↑ more",
+                Style::default().fg(DIM),
+            ));
+        }
+        for (index, id) in group.host_ids[first..last].iter().enumerate() {
+            let absolute_index = first + index;
+            lines.push(group_machine_line(app, id, absolute_index == selected));
+        }
+        if last < group.host_ids.len() {
+            lines.push(Line::styled(
+                "              ↓ more",
+                Style::default().fg(DIM),
+            ));
         }
     }
+    let footer = if group.host_ids.is_empty() {
+        " Esc close  ·  manage membership in Machines "
+    } else {
+        " ↑↓ select  ·  Enter open metrics  ·  Esc close "
+    };
     frame.render_widget(
         Paragraph::new(lines)
             .block(
                 Block::default()
                     .title(" GROUP ")
-                    .title_bottom(
-                        Line::from(" Esc close  ·  manage membership in Machines ").centered(),
-                    )
+                    .title_bottom(Line::from(footer).centered())
                     .borders(Borders::ALL)
                     .border_type(BorderType::Thick)
                     .border_style(Style::default().fg(AMBER))
@@ -981,6 +1012,43 @@ fn render_group_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .wrap(Wrap { trim: true }),
         modal,
     );
+}
+
+fn group_machine_line(app: &App, id: &str, selected: bool) -> Line<'static> {
+    let (name, status, status_color) = if id == "local" {
+        (app.local_name.clone(), "local agent", GREEN)
+    } else {
+        app.remote_hosts
+            .iter()
+            .find(|machine| machine.id == id)
+            .map_or((id.to_owned(), "unavailable", RED), |machine| {
+                let installed = machine.tags.iter().any(|tag| tag == INSTALLED_TAG);
+                (
+                    machine.display_name.clone(),
+                    if installed {
+                        "agent installed"
+                    } else {
+                        "SSH inventory"
+                    },
+                    if installed { GREEN } else { DIM },
+                )
+            })
+    };
+    Line::from(vec![
+        Span::styled(
+            if selected { " › " } else { "   " },
+            Style::default().fg(AMBER).bold(),
+        ),
+        Span::styled(
+            format!("{:<28}", clipped(&name, 28)),
+            if selected {
+                Style::default().fg(INK).bg(AMBER).bold()
+            } else {
+                Style::default().fg(TEXT).bold()
+            },
+        ),
+        Span::styled(format!("  {status}"), Style::default().fg(status_color)),
+    ])
 }
 
 fn render_group_assignment(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -3077,7 +3145,7 @@ fn render_terminal_status(frame: &mut Frame<'_>, area: Rect, message: &str, colo
         Paragraph::new(vec![
             Line::styled(format!(" {message} "), Style::default().fg(color).bold()),
             Line::styled(
-                " Ctrl+] return to machine metrics ",
+                " F10 return to machine metrics  ·  Ctrl+] alternative ",
                 Style::default().fg(DIM),
             ),
         ])

@@ -111,6 +111,8 @@ pub struct Preferences {
     pub custom_theme: Option<CustomTheme>,
     #[serde(default)]
     pub local_alias: Option<String>,
+    #[serde(default)]
+    pub last_machine_id: Option<String>,
 }
 
 impl Default for Preferences {
@@ -121,6 +123,7 @@ impl Default for Preferences {
             font_profile: FontProfile::default(),
             custom_theme: None,
             local_alias: None,
+            last_machine_id: None,
         }
     }
 }
@@ -180,6 +183,7 @@ mod tests {
             font_profile: FontProfile::Ascii,
             custom_theme: None,
             local_alias: Some("My notebook".into()),
+            last_machine_id: Some("edge-01".into()),
         };
 
         save(&path, expected.clone()).await.unwrap();
