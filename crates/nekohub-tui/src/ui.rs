@@ -2202,7 +2202,7 @@ fn render_neko_delivery(frame: &mut Frame<'_>, area: Rect, app: &App, accent: Co
             .unwrap_or_default()
             .min(travel)
     };
-    let paws = if (app.animation_tick / 3).is_multiple_of(2) {
+    let paws = if (app.animation_tick / 3) & 1 == 0 {
         " /| |\\"
     } else {
         "  /|\\ "

@@ -397,8 +397,12 @@ async fn run_event_loop(
                             _ => {}
                         },
                         View::Home => match key.code {
-                            KeyCode::Tab => app.toggle_home_focus(),
-                            KeyCode::BackTab => app.previous_home_focus(),
+                            KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => {
+                                app.toggle_home_focus();
+                            }
+                            KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => {
+                                app.previous_home_focus();
+                            }
                             KeyCode::Char('m') => app.open_remote_picker(),
                             KeyCode::Char('s') => app.open_settings(),
                             KeyCode::Right | KeyCode::Char('l') => {
@@ -415,8 +419,6 @@ async fn run_event_loop(
                                     HomeFocus::Groups => app.previous_home_item(),
                                 }
                             }
-                            KeyCode::Down | KeyCode::Char('j') => app.toggle_home_focus(),
-                            KeyCode::Up | KeyCode::Char('k') => app.previous_home_focus(),
                             KeyCode::Enter if app.home_focus == HomeFocus::Navigation => {
                                 match app.home_nav_selected {
                                     0 => app.toggle_home_focus(),
