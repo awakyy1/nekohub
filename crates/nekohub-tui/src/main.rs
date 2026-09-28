@@ -62,15 +62,33 @@ struct Args {
 
 enum CollectionEvent {
     Snapshot(HostSnapshot),
-    Error { host_id: String, message: String },
-    SetupProgress { progress: u16, message: String },
+    Error {
+        host_id: String,
+        message: String,
+    },
+    SetupProgress {
+        progress: u16,
+        message: String,
+    },
     SetupComplete,
-    SetupError { message: String },
-    RemoteInstallProgress { progress: u16, message: String },
+    SetupError {
+        message: String,
+    },
+    RemoteInstallProgress {
+        progress: u16,
+        message: String,
+    },
     RemoteInstallLog(String),
-    RemoteInstallComplete { target: String },
-    RemoteUninstallComplete { target: String },
-    RemoteInstallError { message: String },
+    RemoteInstallComplete {
+        target: HostTarget,
+        collector: Arc<dyn Collector>,
+    },
+    RemoteUninstallComplete {
+        target: String,
+    },
+    RemoteInstallError {
+        message: String,
+    },
 }
 
 #[tokio::main]
@@ -277,10 +295,17 @@ async fn run_event_loop(
                     app.update_remote_install(progress, message);
                 }
                 CollectionEvent::RemoteInstallLog(line) => app.push_remote_install_log(line),
-                CollectionEvent::RemoteInstallComplete { target } => {
-                    app.complete_remote_install(&target);
+                CollectionEvent::RemoteInstallComplete { target, collector } => {
+                    app.complete_remote_install(&target.alias);
                     if let Err(message) = machines::save(&machines::state_path(), &app.remote_hosts).await {
                         app.fail_remote_install(message);
+                    } else {
+                        app.start_monitoring(target.clone());
+                        app.view = View::RemoteInstallProgress;
+                        spawn_worker(
+                            &mut workers, target, collector, refresh_every,
+                            &event_tx, &refresh_tx, &shutdown_rx,
+                        );
                     }
                 }
                 CollectionEvent::RemoteUninstallComplete { target } => {
@@ -372,23 +397,26 @@ async fn run_event_loop(
                             _ => {}
                         },
                         View::Home => match key.code {
-                            KeyCode::Tab | KeyCode::BackTab => app.toggle_home_focus(),
+                            KeyCode::Tab => app.toggle_home_focus(),
+                            KeyCode::BackTab => app.previous_home_focus(),
                             KeyCode::Char('m') => app.open_remote_picker(),
                             KeyCode::Char('s') => app.open_settings(),
-                            KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => {
+                            KeyCode::Right | KeyCode::Char('l') => {
                                 match app.home_focus {
                                     HomeFocus::Navigation => app.next_home_nav(),
                                     HomeFocus::Machines => app.next_home_machine(),
                                     HomeFocus::Groups => app.next_home_item(),
                                 }
                             }
-                            KeyCode::Up | KeyCode::Left | KeyCode::Char('h' | 'k') => {
+                            KeyCode::Left | KeyCode::Char('h') => {
                                 match app.home_focus {
                                     HomeFocus::Navigation => app.previous_home_nav(),
                                     HomeFocus::Machines => app.previous_home_machine(),
                                     HomeFocus::Groups => app.previous_home_item(),
                                 }
                             }
+                            KeyCode::Down | KeyCode::Char('j') => app.toggle_home_focus(),
+                            KeyCode::Up | KeyCode::Char('k') => app.previous_home_focus(),
                             KeyCode::Enter if app.home_focus == HomeFocus::Navigation => {
                                 match app.home_nav_selected {
                                     0 => app.toggle_home_focus(),
@@ -700,9 +728,35 @@ if command -v curl >/dev/null 2>&1; then
 fi
 echo 'nekoHub agent is ready.'"#;
 
-    let result = run_remote_command(&target, REMOTE_INSTALL, password.as_deref(), &event_tx).await;
+    let result = async {
+        run_remote_command(&target, REMOTE_INSTALL, password.as_deref(), &event_tx).await?;
+        let _ = event_tx
+            .send(CollectionEvent::RemoteInstallProgress {
+                progress: 97,
+                message: "Opening encrypted metrics channel".into(),
+            })
+            .await;
+        let host = HostTarget::from_alias(target);
+        let collector: Arc<dyn Collector> = Arc::new(SshAgentCollector::new(
+            host.alias.clone(),
+            password,
+            Duration::from_secs(12),
+        ));
+        collector
+            .collect(&host)
+            .await
+            .map_err(|error| format!("Agent installed, but metric pairing failed: {error}"))?;
+        let _ = event_tx
+            .send(CollectionEvent::RemoteInstallProgress {
+                progress: 99,
+                message: "First live metric sample received".into(),
+            })
+            .await;
+        Ok::<_, String>((host, collector))
+    }
+    .await;
     let event = match result {
-        Ok(()) => CollectionEvent::RemoteInstallComplete { target },
+        Ok((target, collector)) => CollectionEvent::RemoteInstallComplete { target, collector },
         Err(message) => CollectionEvent::RemoteInstallError { message },
     };
     let _ = event_tx.send(event).await;

@@ -435,12 +435,28 @@ fn render_home_machine_shelf(frame: &mut Frame<'_>, area: Rect, app: &App) {
         )
     }));
     let visible = usize::from(area.width / 24).max(1).min(machines.len());
+    let first = app
+        .home_machine_selected
+        .saturating_sub(visible / 2)
+        .min(machines.len().saturating_sub(visible));
+    let last = first + visible;
     let cards = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(vec![Constraint::Length(23); visible])
         .split(area);
-    for (index, (name, local, installed)) in machines.into_iter().take(visible).enumerate() {
+    for (card_index, index) in (first..last).enumerate() {
+        let (name, local, installed) = machines[index];
         let selected = app.home_focus == HomeFocus::Machines && app.home_machine_selected == index;
+        let title = match (
+            card_index == 0 && first > 0,
+            card_index + 1 == visible && last < machines.len(),
+        ) {
+            (true, true) => " ‹ MACHINES › ",
+            (true, false) => " ‹ MACHINES ",
+            (false, true) => " MACHINES › ",
+            (false, false) if index == 0 => " MACHINES ",
+            _ => " ",
+        };
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(clipped(name, 19), Style::default().fg(TEXT).bold()),
@@ -458,7 +474,7 @@ fn render_home_machine_shelf(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .style(card_background(app, selected))
             .block(
                 Block::default()
-                    .title(if index == 0 { " MACHINES " } else { " " })
+                    .title(title)
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(if selected {
@@ -469,7 +485,7 @@ fn render_home_machine_shelf(frame: &mut Frame<'_>, area: Rect, app: &App) {
                         LINE
                     })),
             ),
-            cards[index],
+            cards[card_index],
         );
     }
 }
@@ -1906,7 +1922,7 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
             Line::from(""),
             Line::styled(
-                "nekoHub will add its signed APT repository, install nekohub-agent and start it.",
+                "nekoHub installs the agent, pairs its metric channel, and verifies a live sample.",
                 Style::default().fg(Color::Gray),
             ),
             Line::styled(
@@ -1969,7 +1985,7 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(vec![
             Line::styled("What happens next", Style::default().fg(AMBER).bold()),
             Line::styled(
-                "Setup stays inside nekoHub with live progress and installation output.",
+                "Setup stays inside nekoHub and opens the dashboard only when everything is ready.",
                 Style::default().fg(Color::Gray),
             ),
         ])
@@ -2042,7 +2058,7 @@ fn render_remote_connect(frame: &mut Frame<'_>, area: Rect, app: &App) {
 #[allow(clippy::too_many_lines)]
 fn render_remote_install_progress(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let width = area.width.min(86);
-    let height = area.height.min(24);
+    let height = area.height.min(26);
     let modal = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -2058,7 +2074,9 @@ fn render_remote_install_progress(frame: &mut Frame<'_>, area: Rect, app: &App) 
     } else {
         AMBER
     };
-    let footer = if app.remote_install_complete || failed {
+    let footer = if app.remote_install_complete && !app.remote_uninstalling {
+        " Enter open live metrics "
+    } else if app.remote_install_complete || failed {
         " Enter return to Machines "
     } else {
         " Installing over SSH · nekoHub stays open "
@@ -2080,8 +2098,8 @@ fn render_remote_install_progress(frame: &mut Frame<'_>, area: Rect, app: &App) 
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(4),
-            Constraint::Length(3),
-            Constraint::Min(7),
+            Constraint::Length(7),
+            Constraint::Min(6),
             Constraint::Length(3),
         ])
         .split(inner);
@@ -2096,7 +2114,7 @@ fn render_remote_install_progress(frame: &mut Frame<'_>, area: Rect, app: &App) 
                 } else if app.remote_uninstalling {
                     "UNINSTALLING NEKOHUB AGENT"
                 } else if app.remote_install_complete {
-                    "AGENT READY"
+                    "AGENT + METRICS READY"
                 } else {
                     "INSTALLING NEKOHUB AGENT"
                 },
@@ -2114,18 +2132,7 @@ fn render_remote_install_progress(frame: &mut Frame<'_>, area: Rect, app: &App) 
         .alignment(Alignment::Center),
         rows[0],
     );
-    frame.render_widget(
-        Gauge::default()
-            .gauge_style(Style::default().fg(accent).bg(DIM))
-            .ratio(f64::from(app.remote_install_progress) / 100.0)
-            .label(format!("{}%", app.remote_install_progress)),
-        Rect::new(
-            rows[1].x + 3,
-            rows[1].y + 1,
-            rows[1].width.saturating_sub(6),
-            1,
-        ),
-    );
+    render_neko_delivery(frame, rows[1], app, accent);
     let logs = app
         .remote_install_logs
         .iter()
@@ -2158,13 +2165,102 @@ fn render_remote_install_progress(frame: &mut Frame<'_>, area: Rect, app: &App) 
             Paragraph::new(if app.remote_uninstalling {
                 "Agent removed from the monitored fleet."
             } else {
-                "Machine registered. Metric pairing is the next step."
+                "Machine registered, paired, and already sending live metrics."
             })
             .style(Style::default().fg(GREEN).bold())
             .alignment(Alignment::Center),
             rows[3],
         );
     }
+}
+
+fn render_neko_delivery(frame: &mut Frame<'_>, area: Rect, app: &App, accent: Color) {
+    if area.width < 46 || area.height < 6 {
+        frame.render_widget(
+            Gauge::default()
+                .gauge_style(Style::default().fg(accent).bg(DIM))
+                .ratio(f64::from(app.remote_install_progress) / 100.0)
+                .label(format!("{}%", app.remote_install_progress)),
+            Rect::new(area.x + 2, area.y + 2, area.width.saturating_sub(4), 1),
+        );
+        return;
+    }
+
+    let depot_width = area.width.clamp(20, 28);
+    let depot = Rect::new(
+        area.right().saturating_sub(depot_width),
+        area.y,
+        depot_width,
+        area.height,
+    );
+    let route_width = depot.x.saturating_sub(area.x).saturating_sub(10);
+    let travel = route_width.saturating_sub(2).max(1);
+    let courier_offset = if app.remote_install_complete {
+        travel
+    } else {
+        u16::try_from((app.animation_tick / 2) % u64::from(travel.saturating_add(5)))
+            .unwrap_or_default()
+            .min(travel)
+    };
+    let paws = if (app.animation_tick / 3).is_multiple_of(2) {
+        " /| |\\"
+    } else {
+        "  /|\\ "
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(" /\\_/\\", Style::default().fg(ORANGE).bold()),
+            Line::from(vec![
+                Span::styled("( o.o )", Style::default().fg(TEXT).bold()),
+                Span::styled("■", Style::default().fg(accent).bold()),
+            ]),
+            Line::styled(paws, Style::default().fg(ORANGE)),
+        ]),
+        Rect::new(
+            area.x.saturating_add(courier_offset),
+            area.y.saturating_add(1),
+            9,
+            3,
+        ),
+    );
+    let route = "· ".repeat(usize::from(route_width / 2));
+    frame.render_widget(
+        Paragraph::new(route).style(Style::default().fg(LINE)),
+        Rect::new(area.x, area.y.saturating_add(5), route_width, 1),
+    );
+
+    let depot_block = Block::default()
+        .title(if app.remote_uninstalling {
+            " NEKO PICKUP "
+        } else {
+            " METRICS DEPOT "
+        })
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent));
+    let depot_inner = depot_block.inner(depot);
+    frame.render_widget(depot_block, depot);
+    let slots = usize::from(depot_inner.width.saturating_sub(2)).max(1);
+    let progress = if app.remote_uninstalling {
+        100_u16.saturating_sub(app.remote_install_progress)
+    } else {
+        app.remote_install_progress
+    };
+    let filled = usize::from(progress) * slots / 100;
+    let cargo = format!("{}{}", "■".repeat(filled), "·".repeat(slots - filled));
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::styled(cargo, Style::default().fg(accent).bold()),
+            Line::from(""),
+            Line::styled(
+                format!("{:>3}%  paired delivery", app.remote_install_progress),
+                Style::default().fg(TEXT),
+            ),
+        ])
+        .alignment(Alignment::Center),
+        depot_inner,
+    );
 }
 
 fn render_monitoring_bar(frame: &mut Frame<'_>, area: Rect, app: &App) {

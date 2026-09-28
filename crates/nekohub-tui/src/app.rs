@@ -113,6 +113,7 @@ pub struct App {
     pub remote_install_field: usize,
     pub remote_install_error: Option<String>,
     pub remote_install_progress: u16,
+    pub remote_install_target_progress: u16,
     pub remote_install_message: String,
     pub remote_install_logs: VecDeque<String>,
     pub remote_install_complete: bool,
@@ -166,6 +167,7 @@ impl App {
             remote_install_field: 0,
             remote_install_error: None,
             remote_install_progress: 0,
+            remote_install_target_progress: 0,
             remote_install_message: String::new(),
             remote_install_logs: VecDeque::with_capacity(12),
             remote_install_complete: false,
@@ -225,6 +227,7 @@ impl App {
             remote_install_field: 0,
             remote_install_error: None,
             remote_install_progress: 0,
+            remote_install_target_progress: 0,
             remote_install_message: String::new(),
             remote_install_logs: VecDeque::with_capacity(12),
             remote_install_complete: false,
@@ -361,6 +364,15 @@ impl App {
             HomeFocus::Navigation => HomeFocus::Machines,
             HomeFocus::Machines => HomeFocus::Groups,
             HomeFocus::Groups => HomeFocus::Navigation,
+        };
+        self.home_notice = None;
+    }
+
+    pub fn previous_home_focus(&mut self) {
+        self.home_focus = match self.home_focus {
+            HomeFocus::Navigation => HomeFocus::Groups,
+            HomeFocus::Machines => HomeFocus::Navigation,
+            HomeFocus::Groups => HomeFocus::Machines,
         };
         self.home_notice = None;
     }
@@ -668,6 +680,17 @@ impl App {
                 .saturating_add(step)
                 .min(self.setup_target_progress);
         }
+        if self.view == View::RemoteInstallProgress
+            && self.remote_install_error.is_none()
+            && self.remote_install_progress < self.remote_install_target_progress
+        {
+            let remaining = self.remote_install_target_progress - self.remote_install_progress;
+            let step = remaining.div_ceil(7).max(1);
+            self.remote_install_progress = self
+                .remote_install_progress
+                .saturating_add(step)
+                .min(self.remote_install_target_progress);
+        }
     }
 
     pub fn toggle_welcome_choice(&mut self) {
@@ -708,7 +731,8 @@ impl App {
 
     pub fn start_remote_install_progress(&mut self) {
         self.remote_uninstalling = false;
-        self.remote_install_progress = 2;
+        self.remote_install_progress = 0;
+        self.remote_install_target_progress = 2;
         self.remote_install_message = "Starting SSH connection".into();
         self.remote_install_logs.clear();
         self.remote_install_error = None;
@@ -717,7 +741,7 @@ impl App {
     }
 
     pub fn update_remote_install(&mut self, progress: u16, message: String) {
-        self.remote_install_progress = progress.min(100);
+        self.remote_install_target_progress = progress.min(100);
         self.remote_install_message = message;
     }
 
@@ -788,7 +812,8 @@ impl App {
     }
 
     pub fn start_remote_uninstall_progress(&mut self) {
-        self.remote_install_progress = 2;
+        self.remote_install_progress = 0;
+        self.remote_install_target_progress = 2;
         self.remote_install_message = "Starting SSH connection".into();
         self.remote_install_logs.clear();
         self.remote_install_error = None;
@@ -860,7 +885,8 @@ impl App {
             .position(|machine| machine.alias == target)
             .map_or(0, |index| index + 1);
         self.remote_install_progress = 100;
-        self.remote_install_message = "Agent installed and service verified".into();
+        self.remote_install_target_progress = 100;
+        self.remote_install_message = "Agent installed, paired, and streaming metrics".into();
         self.remote_install_complete = true;
         self.remote_install_error = None;
         self.view = View::RemoteInstallProgress;
@@ -875,6 +901,7 @@ impl App {
             machine.tags.retain(|tag| tag != INSTALLED_TAG);
         }
         self.remote_install_progress = 100;
+        self.remote_install_target_progress = 100;
         self.remote_install_message = "Agent uninstalled and machine removed from the fleet".into();
         self.remote_install_complete = true;
         self.remote_install_error = None;
@@ -888,18 +915,23 @@ impl App {
     }
 
     pub fn close_remote_install_progress(&mut self) {
+        let was_uninstalling = self.remote_uninstalling;
         if self.remote_install_complete {
             self.remote_notice = Some(if self.remote_uninstalling {
                 "Agent uninstalled. The SSH inventory entry remains available for reinstalling."
                     .into()
             } else {
-                "Agent installed and verified. Select the machine to open live metrics.".into()
+                "Agent installed, paired, and receiving live metrics.".into()
             });
         }
         self.remote_install_draft.clear();
         self.remote_password_draft.clear();
         self.remote_uninstalling = false;
-        self.view = View::RemotePicker;
+        self.view = if self.remote_install_complete && !was_uninstalling && !self.hosts.is_empty() {
+            View::Overview
+        } else {
+            View::RemotePicker
+        };
     }
 
     pub fn explain_remote_pairing(&mut self) {
@@ -999,6 +1031,29 @@ mod tests {
         app.advance_animation();
         assert!(app.setup_visible_progress > 0);
         assert!(app.setup_visible_progress < 70);
+    }
+
+    #[test]
+    fn remote_progress_animates_toward_install_stage() {
+        let mut app = App::home(Vec::new(), Vec::new());
+        app.start_remote_install_progress();
+        app.update_remote_install(82, "Agent package installed".into());
+        app.advance_animation();
+        assert!(app.remote_install_progress > 0);
+        assert!(app.remote_install_progress < 82);
+        assert_eq!(app.remote_install_target_progress, 82);
+    }
+
+    #[test]
+    fn home_focus_moves_in_both_directions() {
+        let mut app = App::home(Vec::new(), Vec::new());
+        assert_eq!(app.home_focus, HomeFocus::Groups);
+        app.toggle_home_focus();
+        assert_eq!(app.home_focus, HomeFocus::Navigation);
+        app.previous_home_focus();
+        assert_eq!(app.home_focus, HomeFocus::Groups);
+        app.previous_home_focus();
+        assert_eq!(app.home_focus, HomeFocus::Machines);
     }
 
     #[test]

@@ -17,8 +17,8 @@ This repository is the architectural seed and first executable vertical slice:
 - keeps a short in-memory history and serves the TUI through a local Unix
   socket;
 - exports Prometheus metrics on `127.0.0.1:9876` for Grafana integration;
-- keeps OpenSSH inventory for future pairing and administration, but does not
-  use SSH for continuous metric collection;
+- uses OpenSSH for inventory, installation, and encrypted transport, but never
+  scrapes metrics by running shell commands over SSH;
 - renders a responsive Ratatui fleet overview and host detail;
 - includes a deterministic demo mode and parser/state tests.
 - starts with an animated choice between monitoring the current machine and an
@@ -45,11 +45,12 @@ cargo run -p nekohub-tui --bin nekohub -- --once --local --agent-socket /tmp/nek
 ```
 
 On first launch, choose **Monitor this machine** and confirm the one-time agent
-setup. nekoHub displays a restrained progress screen, validates real Linux
+setup. nekoHub displays an animated progress screen, validates real Linux
 metrics, and opens the main application. Later launches return directly to the
 same persistent shell, with global Home, Machines, and Settings navigation.
-**This machine** is always the first group; additional groups can be created
-from the card grid and are stored in `~/.config/nekohub/machine-groups.json`.
+The local machine appears under Recent Machines rather than being duplicated as
+a group. Groups can be created from the card grid and are stored in
+`~/.config/nekohub/machine-groups.json`.
 If the service is unavailable, setup pauses with recovery commands and does not
 mark onboarding as complete.
 
@@ -59,7 +60,9 @@ install or uninstall the agent using an SSH destination such as `ops@edge-01`,
 while showing progress and command output without closing nekoHub. SSH key and
 password authentication are supported; passwords remain in memory only for the
 operation. Selecting an installed remote machine opens its native agent metrics
-through an encrypted SSH tunnel.
+through an encrypted SSH tunnel. Installation is only marked complete after the
+service is active, the native agent protocol is paired, and the first live
+metric sample has been received.
 
 Settings includes four complete palettes and an **Import / upload theme**
 action. Community themes use the JSON format in
@@ -89,7 +92,7 @@ it with `systemctl status nekohub-agent`.
 Alternatively, install downloaded builds directly:
 
 ```bash
-sudo apt install ./nekohub-agent_0.9.0_amd64.deb ./nekohub_0.9.0_amd64.deb
+sudo apt install ./nekohub-agent_0.10.0_amd64.deb ./nekohub_0.10.0_amd64.deb
 nekohub
 ```
 
