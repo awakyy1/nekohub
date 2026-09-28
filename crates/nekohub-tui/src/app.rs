@@ -678,11 +678,14 @@ impl App {
     }
 
     pub fn begin_remote_uninstall(&mut self) {
-        let Some(machine) = self.selected_installed_remote() else {
+        let Some(target) = self
+            .selected_installed_remote()
+            .map(|machine| machine.alias.clone())
+        else {
             self.remote_notice = Some("Select a machine with an installed agent first.".into());
             return;
         };
-        self.remote_install_draft.clone_from(&machine.alias);
+        self.remote_install_draft = target;
         self.remote_install_error = None;
         self.remote_uninstalling = true;
         self.view = View::RemoteUninstallConfirm;

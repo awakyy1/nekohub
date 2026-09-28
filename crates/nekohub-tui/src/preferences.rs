@@ -127,7 +127,7 @@ impl FontProfile {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preferences {
     #[serde(default = "background_enabled_by_default")]
     pub background_enabled: bool,
@@ -206,7 +206,7 @@ mod tests {
             custom_theme: None,
         };
 
-        save(&path, expected).await.unwrap();
+        save(&path, expected.clone()).await.unwrap();
 
         assert_eq!(load(&path), expected);
     }
