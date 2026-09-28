@@ -155,6 +155,12 @@ fn local_target() -> HostTarget {
     }
 }
 
+fn local_target_named(display_name: &str) -> HostTarget {
+    let mut target = local_target();
+    target.display_name = display_name.to_owned();
+    target
+}
+
 fn default_ssh_config() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -240,6 +246,10 @@ async fn run_tui(
     app.theme = preferences.theme;
     app.font_profile = preferences.font_profile;
     app.custom_theme = preferences.custom_theme;
+    app.local_alias = preferences.local_alias;
+    if let Some(alias) = app.local_alias.as_ref() {
+        app.local_name.clone_from(alias);
+    }
     run_event_loop(&mut app, None, Some(local), refresh_every, state_path).await
 }
 
@@ -300,6 +310,12 @@ async fn run_event_loop(
                     if let Err(message) = machines::save(&machines::state_path(), &app.remote_hosts).await {
                         app.fail_remote_install(message);
                     } else {
+                        let target = app
+                            .remote_hosts
+                            .iter()
+                            .find(|machine| machine.alias == target.alias)
+                            .cloned()
+                            .unwrap_or(target);
                         app.start_monitoring(target.clone());
                         app.view = View::RemoteInstallProgress;
                         spawn_worker(
@@ -319,7 +335,7 @@ async fn run_event_loop(
             Some(input) = events.next() => match input? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if matches!(key.code, KeyCode::Char('q'))
-                        && !matches!(app.view, View::CreateGroup | View::GroupAssign | View::RemoteInstall | View::RemoteConnect | View::RemoteUninstallConfirm | View::ThemeImport)
+                        && !matches!(app.view, View::CreateGroup | View::GroupAssign | View::MachineAlias | View::RemoteInstall | View::RemoteConnect | View::RemoteUninstallConfirm | View::ThemeImport)
                         || matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break Ok(());
@@ -430,7 +446,7 @@ async fn run_event_loop(
                                 && app.home_machine_selected == 0 =>
                             {
                                 if let Some(collector) = local_collector.as_ref() {
-                                    let target = local_target();
+                                    let target = local_target_named(&app.local_name);
                                     app.start_monitoring(target.clone());
                                     spawn_worker(
                                         &mut workers, target, Arc::clone(collector), refresh_every,
@@ -479,7 +495,7 @@ async fn run_event_loop(
                             KeyCode::Esc => app.close_remote_picker(),
                             KeyCode::Enter if app.remote_selected == 0 => {
                                 if let Some(collector) = local_collector.as_ref() {
-                                    let target = local_target();
+                                    let target = local_target_named(&app.local_name);
                                     app.start_monitoring(target.clone());
                                     spawn_worker(
                                         &mut workers, target, Arc::clone(collector), refresh_every,
@@ -494,8 +510,33 @@ async fn run_event_loop(
                                 app.begin_remote_connect();
                             }
                             KeyCode::Enter => app.explain_remote_pairing(),
+                            KeyCode::Char('a') => app.begin_machine_alias(),
                             KeyCode::Char('g') => app.begin_group_assignment(),
                             KeyCode::Char('u') | KeyCode::Delete => app.begin_remote_uninstall(),
+                            _ => {}
+                        },
+                        View::MachineAlias => match key.code {
+                            KeyCode::Esc => app.cancel_machine_alias(),
+                            KeyCode::Backspace => app.pop_machine_alias_character(),
+                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.clear_machine_alias();
+                            }
+                            KeyCode::Enter => {
+                                let local = app.remote_selected == 0;
+                                if app.apply_machine_alias().is_ok() {
+                                    if local {
+                                        save_preferences(app).await;
+                                    } else if let Err(message) = machines::save(
+                                        &machines::state_path(),
+                                        &app.remote_hosts,
+                                    ).await {
+                                        app.remote_notice = Some(message);
+                                    }
+                                }
+                            }
+                            KeyCode::Char(character) => {
+                                app.push_machine_alias_character(character);
+                            }
                             _ => {}
                         },
                         View::GroupAssign => match key.code {
@@ -670,6 +711,7 @@ async fn save_preferences(app: &mut App) {
         theme: app.theme,
         font_profile: app.font_profile,
         custom_theme: app.custom_theme.clone(),
+        local_alias: app.local_alias.clone(),
     };
     if let Err(message) = preferences::save(&preferences::state_path(), updated).await {
         app.settings_notice = Some(message);
@@ -917,13 +959,9 @@ fn begin_agent_setup(
     event_tx: &mpsc::Sender<CollectionEvent>,
     state_path: PathBuf,
 ) {
+    let target = local_target_named(&app.local_name);
     app.start_agent_setup();
-    workers.spawn(agent_setup(
-        local_target(),
-        collector,
-        event_tx.clone(),
-        state_path,
-    ));
+    workers.spawn(agent_setup(target, collector, event_tx.clone(), state_path));
 }
 
 async fn agent_setup(

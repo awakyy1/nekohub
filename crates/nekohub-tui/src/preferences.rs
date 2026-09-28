@@ -109,6 +109,8 @@ pub struct Preferences {
     pub font_profile: FontProfile,
     #[serde(default)]
     pub custom_theme: Option<CustomTheme>,
+    #[serde(default)]
+    pub local_alias: Option<String>,
 }
 
 impl Default for Preferences {
@@ -118,6 +120,7 @@ impl Default for Preferences {
             theme: Theme::default(),
             font_profile: FontProfile::default(),
             custom_theme: None,
+            local_alias: None,
         }
     }
 }
@@ -176,6 +179,7 @@ mod tests {
             theme: Theme::Purple,
             font_profile: FontProfile::Ascii,
             custom_theme: None,
+            local_alias: Some("My notebook".into()),
         };
 
         save(&path, expected.clone()).await.unwrap();

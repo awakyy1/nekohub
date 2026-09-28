@@ -85,6 +85,11 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
             render_remote_picker(frame, frame.area(), app);
             return;
         }
+        View::MachineAlias => {
+            render_remote_picker(frame, frame.area(), app);
+            render_machine_alias(frame, frame.area(), app);
+            return;
+        }
         View::RemoteInstall => {
             render_remote_picker(frame, frame.area(), app);
             render_remote_install(frame, frame.area(), app);
@@ -139,6 +144,7 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
         | View::GroupDetail
         | View::GroupAssign
         | View::RemotePicker
+        | View::MachineAlias
         | View::RemoteInstall
         | View::RemoteConnect
         | View::RemoteUninstallConfirm
@@ -1658,7 +1664,7 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area,
         app,
         1,
-        "↑↓ select  ·  Enter connect  ·  g group  ·  u uninstall  ·  Esc home  ·  q quit",
+        "↑↓ select  ·  Enter connect  ·  a alias  ·  g group  ·  u uninstall  ·  Esc home",
     );
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -1704,11 +1710,17 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         return;
     }
     let local_selected = app.remote_selected == 0;
+    let local_group = app
+        .machine_groups
+        .iter()
+        .find(|group| group.host_ids.iter().any(|id| id == "local"))
+        .map_or("Unassigned", |group| group.name.as_str());
     let local = Row::new([
         if local_selected { "›" } else { " " },
         app.local_name.as_str(),
+        "localhost",
         "Local agent",
-        "Local",
+        local_group,
         "● ready",
     ])
     .style(if local_selected {
@@ -1719,15 +1731,21 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let remote_rows = app.remote_hosts.iter().enumerate().map(|(index, host)| {
         let selected = index + 1 == app.remote_selected;
         let installed = host.tags.iter().any(|tag| tag == INSTALLED_TAG);
+        let group = app
+            .machine_groups
+            .iter()
+            .find(|group| group.host_ids.contains(&host.id))
+            .map_or("Unassigned", |group| group.name.as_str());
         Row::new([
             if selected { "›" } else { " " },
             host.display_name.as_str(),
+            host.alias.as_str(),
             if installed {
                 "nekoHub agent"
             } else {
                 "SSH inventory"
             },
-            "Unassigned",
+            group,
             if installed {
                 "● agent installed"
             } else {
@@ -1744,14 +1762,15 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         std::iter::once(local).chain(remote_rows),
         [
             Constraint::Length(2),
-            Constraint::Min(18),
-            Constraint::Length(15),
-            Constraint::Length(16),
-            Constraint::Length(18),
+            Constraint::Min(14),
+            Constraint::Min(14),
+            Constraint::Length(14),
+            Constraint::Length(14),
+            Constraint::Length(17),
         ],
     )
     .header(
-        Row::new(["", "Machine", "Source", "Group", "Status"])
+        Row::new(["", "Alias", "Connection", "Source", "Group", "Status"])
             .style(Style::default().fg(DIM).bold())
             .bottom_margin(1),
     )
@@ -1800,7 +1819,7 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                         .bold(),
                 ),
                 Span::styled(
-                    "    Removes it from the monitored fleet  ·  [g] assign group",
+                    "    Removes it from the fleet  ·  [g] group  ·  [a] alias",
                     Style::default().fg(DIM),
                 ),
             ]),
@@ -1811,6 +1830,86 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(if install_selected { AMBER } else { LINE })),
         ),
+        rows[2],
+    );
+}
+
+fn render_machine_alias(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(62);
+    let height = area.height.min(13);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    let identity = if app.remote_selected == 0 {
+        "localhost"
+    } else {
+        app.remote_hosts
+            .get(app.remote_selected - 1)
+            .map_or("machine", |machine| machine.alias.as_str())
+    };
+    let cursor = if app.animation_tick % 10 < 5 {
+        "_"
+    } else {
+        " "
+    };
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" /\\ ", Style::default().fg(AMBER).bold()),
+            Span::styled(" NAME THIS MACHINE ", Style::default().fg(TEXT).bold()),
+        ]))
+        .title_bottom(Line::from(" Enter save  ·  Ctrl+U reset  ·  Esc cancel ").centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(AMBER))
+        .style(canvas_style(app));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(2),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Give it a friendly name", Style::default().fg(TEXT).bold()),
+            Line::styled(
+                format!("Connection identity stays {identity}"),
+                Style::default().fg(DIM),
+            ),
+        ])
+        .alignment(Alignment::Center),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(format!(" {}{cursor}", app.machine_alias_draft)).block(
+            Block::default()
+                .title(" alias · up to 32 characters ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(AMBER)),
+        ),
+        rows[1],
+    );
+    let hint = app
+        .machine_alias_error
+        .as_deref()
+        .unwrap_or("Clear the field and save to restore the original machine name.");
+    frame.render_widget(
+        Paragraph::new(hint)
+            .style(Style::default().fg(if app.machine_alias_error.is_some() {
+                RED
+            } else {
+                DIM
+            }))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
         rows[2],
     );
 }
@@ -3549,6 +3648,9 @@ mod tests {
             app.cancel_theme_import();
             app.open_remote_picker();
             app.remote_selected = 0;
+            app.begin_machine_alias();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.cancel_machine_alias();
             app.begin_group_assignment();
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.cancel_group_assignment();

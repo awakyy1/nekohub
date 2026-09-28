@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use nekohub_core::HostTarget;
 
 pub const INSTALLED_TAG: &str = "agent-installed";
+pub const CUSTOM_ALIAS_TAG: &str = "custom-alias";
 
 pub fn state_path() -> PathBuf {
     dirs::config_dir()
@@ -40,7 +41,12 @@ pub fn merge(discovered: &mut Vec<HostTarget>, registered: Vec<HostTarget>) {
 pub async fn save(path: &Path, machines: &[HostTarget]) -> Result<(), String> {
     let registered = machines
         .iter()
-        .filter(|machine| machine.tags.iter().any(|tag| tag == INSTALLED_TAG))
+        .filter(|machine| {
+            machine
+                .tags
+                .iter()
+                .any(|tag| tag == INSTALLED_TAG || tag == CUSTOM_ALIAS_TAG)
+        })
         .collect::<Vec<_>>();
     let contents = serde_json::to_vec_pretty(&registered)
         .map_err(|error| format!("Could not encode registered machines: {error}"))?;
@@ -65,5 +71,19 @@ mod tests {
         registered.tags.push(INSTALLED_TAG.into());
         merge(&mut discovered, vec![registered]);
         assert!(discovered[0].tags.iter().any(|tag| tag == INSTALLED_TAG));
+    }
+
+    #[tokio::test]
+    async fn custom_alias_is_saved_without_an_installed_agent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("machines.json");
+        let mut machine = HostTarget::from_alias("edge-01");
+        machine.display_name = "Studio server".into();
+        machine.tags.push(CUSTOM_ALIAS_TAG.into());
+
+        save(&path, &[machine]).await.unwrap();
+        let saved = load(&path);
+
+        assert_eq!(saved[0].display_name, "Studio server");
     }
 }

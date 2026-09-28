@@ -4,7 +4,7 @@ use nekohub_core::{HostSnapshot, HostTarget};
 
 use crate::{
     groups::MachineGroup,
-    machines::INSTALLED_TAG,
+    machines::{CUSTOM_ALIAS_TAG, INSTALLED_TAG},
     preferences::{CustomTheme, FontProfile, Theme},
 };
 
@@ -18,6 +18,7 @@ pub enum View {
     GroupDetail,
     GroupAssign,
     RemotePicker,
+    MachineAlias,
     RemoteInstall,
     RemoteConnect,
     RemoteUninstallConfirm,
@@ -79,6 +80,7 @@ impl HostState {
 #[derive(Debug)]
 pub struct App {
     pub local_name: String,
+    pub local_alias: Option<String>,
     pub hosts: Vec<HostState>,
     pub selected: usize,
     pub view: View,
@@ -108,6 +110,8 @@ pub struct App {
     pub home_notice: Option<String>,
     pub remote_hosts: Vec<HostTarget>,
     pub remote_selected: usize,
+    pub machine_alias_draft: String,
+    pub machine_alias_error: Option<String>,
     pub remote_install_draft: String,
     pub remote_password_draft: String,
     pub remote_install_field: usize,
@@ -133,6 +137,7 @@ impl App {
     pub fn new(remote_hosts: Vec<HostTarget>, machine_groups: Vec<MachineGroup>) -> Self {
         Self {
             local_name: local_machine_name(),
+            local_alias: None,
             hosts: Vec::new(),
             selected: 0,
             view: View::Welcome,
@@ -162,6 +167,8 @@ impl App {
             home_notice: None,
             remote_hosts,
             remote_selected: 0,
+            machine_alias_draft: String::new(),
+            machine_alias_error: None,
             remote_install_draft: String::new(),
             remote_password_draft: String::new(),
             remote_install_field: 0,
@@ -193,6 +200,7 @@ impl App {
             .collect();
         Self {
             local_name: local_machine_name(),
+            local_alias: None,
             hosts,
             selected: 0,
             view: View::Overview,
@@ -222,6 +230,8 @@ impl App {
             home_notice: None,
             remote_hosts: Vec::new(),
             remote_selected: 0,
+            machine_alias_draft: String::new(),
+            machine_alias_error: None,
             remote_install_draft: String::new(),
             remote_password_draft: String::new(),
             remote_install_field: 0,
@@ -500,6 +510,74 @@ impl App {
     }
 
     pub fn cancel_group_assignment(&mut self) {
+        self.view = View::RemotePicker;
+    }
+
+    pub fn begin_machine_alias(&mut self) {
+        if self.remote_selected > self.remote_hosts.len() {
+            self.remote_notice = Some("Select a machine before editing its alias.".into());
+            return;
+        }
+        self.machine_alias_draft = if self.remote_selected == 0 {
+            self.local_name.clone()
+        } else {
+            self.remote_hosts[self.remote_selected - 1]
+                .display_name
+                .clone()
+        };
+        self.machine_alias_error = None;
+        self.remote_notice = None;
+        self.view = View::MachineAlias;
+    }
+
+    pub fn push_machine_alias_character(&mut self, character: char) {
+        if self.machine_alias_draft.chars().count() < 32 && !character.is_control() {
+            self.machine_alias_draft.push(character);
+            self.machine_alias_error = None;
+        }
+    }
+
+    pub fn pop_machine_alias_character(&mut self) {
+        self.machine_alias_draft.pop();
+        self.machine_alias_error = None;
+    }
+
+    pub fn clear_machine_alias(&mut self) {
+        self.machine_alias_draft.clear();
+        self.machine_alias_error = None;
+    }
+
+    pub fn apply_machine_alias(&mut self) -> Result<(), String> {
+        let alias = self.machine_alias_draft.trim();
+        if alias.chars().count() > 32 {
+            let message = "Aliases can contain at most 32 characters.".to_owned();
+            self.machine_alias_error = Some(message.clone());
+            return Err(message);
+        }
+        if self.remote_selected == 0 {
+            self.local_alias = (!alias.is_empty()).then(|| alias.to_owned());
+            self.local_name = self.local_alias.clone().unwrap_or_else(local_machine_name);
+        } else if let Some(machine) = self.remote_hosts.get_mut(self.remote_selected - 1) {
+            if alias.is_empty() {
+                machine.display_name.clone_from(&machine.alias);
+                machine.tags.retain(|tag| tag != CUSTOM_ALIAS_TAG);
+            } else {
+                machine.display_name = alias.to_owned();
+                if !machine.tags.iter().any(|tag| tag == CUSTOM_ALIAS_TAG) {
+                    machine.tags.push(CUSTOM_ALIAS_TAG.into());
+                }
+            }
+        }
+        self.machine_alias_draft.clear();
+        self.machine_alias_error = None;
+        self.remote_notice = Some("Machine alias saved.".into());
+        self.view = View::RemotePicker;
+        Ok(())
+    }
+
+    pub fn cancel_machine_alias(&mut self) {
+        self.machine_alias_draft.clear();
+        self.machine_alias_error = None;
         self.view = View::RemotePicker;
     }
 
@@ -973,6 +1051,7 @@ fn shell_navigation_index(view: View) -> Option<usize> {
     match view {
         View::Home | View::CreateGroup | View::GroupDetail => Some(0),
         View::RemotePicker
+        | View::MachineAlias
         | View::GroupAssign
         | View::RemoteInstall
         | View::RemoteConnect
@@ -1101,6 +1180,36 @@ mod tests {
         app.begin_group_assignment();
         app.apply_group_assignment();
         assert!(app.machine_groups[0].host_ids.is_empty());
+    }
+
+    #[test]
+    fn assigns_and_resets_machine_aliases() {
+        let mut app = App::home(vec![HostTarget::from_alias("edge-01")], Vec::new());
+        app.remote_selected = 1;
+        app.begin_machine_alias();
+        app.clear_machine_alias();
+        for character in "Media server".chars() {
+            app.push_machine_alias_character(character);
+        }
+        app.apply_machine_alias().unwrap();
+        assert_eq!(app.remote_hosts[0].display_name, "Media server");
+        assert!(
+            app.remote_hosts[0]
+                .tags
+                .iter()
+                .any(|tag| tag == CUSTOM_ALIAS_TAG)
+        );
+
+        app.begin_machine_alias();
+        app.clear_machine_alias();
+        app.apply_machine_alias().unwrap();
+        assert_eq!(app.remote_hosts[0].display_name, "edge-01");
+        assert!(
+            app.remote_hosts[0]
+                .tags
+                .iter()
+                .all(|tag| tag != CUSTOM_ALIAS_TAG)
+        );
     }
 
     #[test]

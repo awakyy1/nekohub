@@ -30,6 +30,8 @@ This repository is the architectural seed and first executable vertical slice:
 - opens remote live metrics through an encrypted SSH tunnel to the native agent
   protocol; the agent performs collection and SSH never runs metric commands;
 - separates recent machines from groups, with persistent group membership;
+- supports persistent friendly aliases for local and remote machines while
+  preserving their real SSH connection identities;
 - applies four complete palettes, imports community theme JSON files, and
   persists three interface-lettering profiles.
 
@@ -55,7 +57,8 @@ If the service is unavailable, setup pauses with recovery commands and does not
 mark onboarding as complete.
 
 The Home screen separates recent machines from groups. In Machines, press `g`
-to add or remove the selected machine from a group. The Machines screen can
+to add or remove the selected machine from a group, or `a` to edit its friendly
+alias. The Machines screen can
 install or uninstall the agent using an SSH destination such as `ops@edge-01`,
 while showing progress and command output without closing nekoHub. SSH key and
 password authentication are supported; passwords remain in memory only for the
@@ -92,7 +95,7 @@ it with `systemctl status nekohub-agent`.
 Alternatively, install downloaded builds directly:
 
 ```bash
-sudo apt install ./nekohub-agent_0.10.0_amd64.deb ./nekohub_0.10.0_amd64.deb
+sudo apt install ./nekohub-agent_0.11.0_amd64.deb ./nekohub_0.11.0_amd64.deb
 nekohub
 ```
 
