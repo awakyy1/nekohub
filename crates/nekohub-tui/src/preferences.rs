@@ -10,6 +10,7 @@ pub enum Theme {
     Blue,
     Red,
     Purple,
+    Custom,
 }
 
 impl Theme {
@@ -21,6 +22,7 @@ impl Theme {
             Self::Blue => "Ocean",
             Self::Red => "Ember",
             Self::Purple => "Violet",
+            Self::Custom => "Custom",
         }
     }
 
@@ -30,6 +32,7 @@ impl Theme {
             Self::Blue => Self::Red,
             Self::Red => Self::Purple,
             Self::Purple => Self::Pink,
+            Self::Custom => Self::Pink,
         }
     }
 
@@ -39,7 +42,51 @@ impl Theme {
             Self::Blue => Self::Pink,
             Self::Red => Self::Blue,
             Self::Purple => Self::Red,
+            Self::Custom => Self::Purple,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomTheme {
+    pub name: String,
+    pub primary: String,
+    pub secondary: String,
+    pub tertiary: String,
+    pub success: String,
+    pub background: String,
+    pub surface: String,
+    pub border: String,
+    pub text: String,
+    pub muted: String,
+}
+
+impl CustomTheme {
+    fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() || self.name.chars().count() > 32 {
+            return Err("Theme name must contain 1–32 characters.".into());
+        }
+        for color in [
+            &self.primary,
+            &self.secondary,
+            &self.tertiary,
+            &self.success,
+            &self.background,
+            &self.surface,
+            &self.border,
+            &self.text,
+            &self.muted,
+        ] {
+            if color.len() != 7
+                || !color.starts_with('#')
+                || !color[1..]
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+            {
+                return Err(format!("Invalid theme color {color}; use #RRGGBB."));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -88,6 +135,8 @@ pub struct Preferences {
     pub theme: Theme,
     #[serde(default)]
     pub font_profile: FontProfile,
+    #[serde(default)]
+    pub custom_theme: Option<CustomTheme>,
 }
 
 impl Default for Preferences {
@@ -96,8 +145,18 @@ impl Default for Preferences {
             background_enabled: background_enabled_by_default(),
             theme: Theme::default(),
             font_profile: FontProfile::default(),
+            custom_theme: None,
         }
     }
+}
+
+pub fn import_theme(path: &Path) -> Result<CustomTheme, String> {
+    let contents = std::fs::read_to_string(path)
+        .map_err(|error| format!("Could not read theme file: {error}"))?;
+    let theme: CustomTheme =
+        serde_json::from_str(&contents).map_err(|error| format!("Invalid theme JSON: {error}"))?;
+    theme.validate()?;
+    Ok(theme)
 }
 
 pub fn state_path() -> PathBuf {
@@ -144,10 +203,26 @@ mod tests {
             background_enabled: false,
             theme: Theme::Purple,
             font_profile: FontProfile::Ascii,
+            custom_theme: None,
         };
 
         save(&path, expected).await.unwrap();
 
         assert_eq!(load(&path), expected);
+    }
+
+    #[test]
+    fn imports_a_valid_community_theme() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("theme.json");
+        std::fs::write(
+            &path,
+            r##"{"name":"Moon","primary":"#ff88bb","secondary":"#ffaa88","tertiary":"#aa88ff","success":"#77ddaa","background":"#101018","surface":"#181824","border":"#34344a","text":"#eeeeff","muted":"#888899"}"##,
+        )
+        .unwrap();
+
+        let theme = import_theme(&path).unwrap();
+
+        assert_eq!(theme.name, "Moon");
     }
 }

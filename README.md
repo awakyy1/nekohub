@@ -25,9 +25,10 @@ This repository is the architectural seed and first executable vertical slice:
   OpenSSH host;
 - collects the current Linux machine through `nekohub-agent` without SSH;
 - presents concrete aliases from `~/.ssh/config` in the remote picker.
-- installs and starts the signed `nekohub-agent` package on remote Debian and
-  Ubuntu amd64 machines through an interactive OpenSSH session;
-- persists four accent themes and three interface-lettering profiles.
+- installs or removes `nekohub-agent` on remote Debian and Ubuntu amd64
+  machines with live progress inside the app;
+- applies four complete palettes, imports community theme JSON files, and
+  persists three interface-lettering profiles.
 
 ## Run
 
@@ -49,11 +50,16 @@ from the card grid and are stored in `~/.config/nekohub/machine-groups.json`.
 If the service is unavailable, setup pauses with recovery commands and does not
 mark onboarding as complete.
 
-The Machines screen discovers aliases in `~/.ssh/config` and can install the
-agent by asking for an SSH destination such as `ops@edge-01`. Host-key checks,
-SSH passwords, and `sudo` prompts remain under OpenSSH's control and are never
-stored by nekoHub. Secure metric pairing is the next milestone; SSH metric
-collection remains disabled.
+The Home screen shows the local machine and every discovered or registered
+remote machine. The Machines screen can install or uninstall the agent using
+an SSH destination such as `ops@edge-01`, while showing progress and command
+output without closing nekoHub. In-app setup currently requires SSH key/agent
+authentication and remote root or passwordless `sudo`. Secure metric pairing
+is the next milestone; SSH metric collection remains disabled.
+
+Settings includes four complete palettes and an **Import / upload theme**
+action. Community themes use the JSON format in
+[`docs/theme-example.json`](docs/theme-example.json).
 
 Keys: `j`/`k` or arrows move, `Enter` selects, `Esc` goes back, `r` refreshes,
 and `q` quits.
@@ -79,7 +85,7 @@ it with `systemctl status nekohub-agent`.
 Alternatively, install downloaded builds directly:
 
 ```bash
-sudo apt install ./nekohub-agent_0.7.0_amd64.deb ./nekohub_0.7.0_amd64.deb
+sudo apt install ./nekohub-agent_0.8.0_amd64.deb ./nekohub_0.8.0_amd64.deb
 nekohub
 ```
 

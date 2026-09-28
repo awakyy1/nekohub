@@ -9,13 +9,16 @@ mod ui;
 
 use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 
-use app::{App, HomeFocus, View};
+use app::{App, HomeFocus, SettingsFocus, View};
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use nekohub_agent::AgentCollector;
 use nekohub_core::{Collector, HostSnapshot, HostTarget, Inventory, RateTracker};
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    sync::{broadcast, mpsc, watch},
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -63,6 +66,11 @@ enum CollectionEvent {
     SetupProgress { progress: u16, message: String },
     SetupComplete,
     SetupError { message: String },
+    RemoteInstallProgress { progress: u16, message: String },
+    RemoteInstallLog(String),
+    RemoteInstallComplete { target: String },
+    RemoteUninstallComplete { target: String },
+    RemoteInstallError { message: String },
 }
 
 #[tokio::main]
@@ -213,6 +221,7 @@ async fn run_tui(
     app.background_enabled = preferences.background_enabled;
     app.theme = preferences.theme;
     app.font_profile = preferences.font_profile;
+    app.custom_theme = preferences.custom_theme;
     run_event_loop(&mut app, None, Some(local), refresh_every, state_path).await
 }
 
@@ -264,11 +273,28 @@ async fn run_event_loop(
                 }
                 CollectionEvent::SetupComplete => app.open_home(),
                 CollectionEvent::SetupError { message } => app.fail_agent_setup(message),
+                CollectionEvent::RemoteInstallProgress { progress, message } => {
+                    app.update_remote_install(progress, message);
+                }
+                CollectionEvent::RemoteInstallLog(line) => app.push_remote_install_log(line),
+                CollectionEvent::RemoteInstallComplete { target } => {
+                    app.complete_remote_install(&target);
+                    if let Err(message) = machines::save(&machines::state_path(), &app.remote_hosts).await {
+                        app.fail_remote_install(message);
+                    }
+                }
+                CollectionEvent::RemoteUninstallComplete { target } => {
+                    app.complete_remote_uninstall(&target);
+                    if let Err(message) = machines::save(&machines::state_path(), &app.remote_hosts).await {
+                        app.fail_remote_install(message);
+                    }
+                }
+                CollectionEvent::RemoteInstallError { message } => app.fail_remote_install(message),
             },
             Some(input) = events.next() => match input? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if matches!(key.code, KeyCode::Char('q'))
-                        && !matches!(app.view, View::CreateGroup | View::RemoteInstall)
+                        && !matches!(app.view, View::CreateGroup | View::RemoteInstall | View::RemoteUninstallConfirm | View::ThemeImport)
                         || matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break Ok(());
@@ -418,6 +444,7 @@ async fn run_event_loop(
                                 app.begin_remote_install();
                             }
                             KeyCode::Enter => app.explain_remote_pairing(),
+                            KeyCode::Char('u') | KeyCode::Delete => app.begin_remote_uninstall(),
                             _ => {}
                         },
                         View::RemoteInstall => match key.code {
@@ -425,24 +452,8 @@ async fn run_event_loop(
                             KeyCode::Backspace => app.pop_remote_install_character(),
                             KeyCode::Enter => {
                                 if let Ok(target) = app.remote_install_target() {
-                                    terminal.suspend()?;
-                                    let install_result = install_remote_agent(&target).await;
-                                    terminal.resume()?;
-                                    events = EventStream::new();
-                                    match install_result {
-                                        Ok(()) => {
-                                            app.complete_remote_install(&target);
-                                            if let Err(message) = machines::save(
-                                                &machines::state_path(),
-                                                &app.remote_hosts,
-                                            )
-                                            .await
-                                            {
-                                                app.remote_notice = Some(message);
-                                            }
-                                        }
-                                        Err(message) => app.fail_remote_install(message),
-                                    }
+                                    app.start_remote_install_progress();
+                                    workers.spawn(install_remote_agent(target, event_tx.clone()));
                                 }
                             }
                             KeyCode::Char(character) => {
@@ -450,32 +461,91 @@ async fn run_event_loop(
                             }
                             _ => {}
                         },
+                        View::RemoteUninstallConfirm => match key.code {
+                            KeyCode::Esc => app.cancel_remote_uninstall(),
+                            KeyCode::Enter => {
+                                let target = app.remote_install_draft.clone();
+                                app.start_remote_uninstall_progress();
+                                workers.spawn(uninstall_remote_agent(target, event_tx.clone()));
+                            }
+                            _ => {}
+                        },
+                        View::RemoteInstallProgress => match key.code {
+                            KeyCode::Enter | KeyCode::Esc
+                                if app.remote_install_complete || app.remote_install_error.is_some() =>
+                            {
+                                app.close_remote_install_progress();
+                            }
+                            _ => {}
+                        },
                         View::Settings => match key.code {
                             KeyCode::Down | KeyCode::Char('j') => app.next_setting(),
                             KeyCode::Up | KeyCode::Char('k') => app.previous_setting(),
-                            KeyCode::Enter | KeyCode::Char(' ') if app.settings_selected == 0 => {
+                            KeyCode::Tab | KeyCode::BackTab => app.toggle_settings_focus(),
+                            KeyCode::Right | KeyCode::Enter
+                                if app.settings_focus == SettingsFocus::Sidebar =>
+                            {
+                                app.enter_settings_content();
+                            }
+                            KeyCode::Left | KeyCode::Char('h')
+                                if app.settings_focus == SettingsFocus::Content =>
+                            {
+                                app.leave_settings_content();
+                            }
+                            KeyCode::Enter | KeyCode::Char(' ')
+                                if app.settings_focus == SettingsFocus::Content
+                                    && app.settings_selected == 0
+                                    && app.settings_item_selected == 0 =>
+                            {
                                 app.toggle_background();
                                 save_preferences(app).await;
                             }
-                            KeyCode::Left | KeyCode::Char('h') if app.settings_selected == 0 => {
-                                app.previous_font_profile();
-                                save_preferences(app).await;
-                            }
-                            KeyCode::Right | KeyCode::Char('l') if app.settings_selected == 0 => {
+                            KeyCode::Enter | KeyCode::Char(' ')
+                                if app.settings_focus == SettingsFocus::Content
+                                    && app.settings_selected == 0
+                                    && app.settings_item_selected == 1 =>
+                            {
                                 app.next_font_profile();
                                 save_preferences(app).await;
                             }
-                            KeyCode::Left | KeyCode::Char('h') if app.settings_selected == 1 => {
-                                app.previous_theme();
-                                save_preferences(app).await;
-                            }
-                            KeyCode::Right | KeyCode::Char('l' | ' ') | KeyCode::Enter
-                                if app.settings_selected == 1 =>
+                            KeyCode::Enter | KeyCode::Char(' ')
+                                if app.settings_focus == SettingsFocus::Content
+                                    && app.settings_selected == 1
+                                    && app.settings_item_selected < 4 =>
                             {
-                                app.next_theme();
+                                app.apply_builtin_theme(
+                                    preferences::Theme::ALL[app.settings_item_selected],
+                                );
                                 save_preferences(app).await;
                             }
-                            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.open_home(),
+                            KeyCode::Enter | KeyCode::Char(' ')
+                                if app.settings_focus == SettingsFocus::Content
+                                    && app.settings_selected == 1
+                                    && app.settings_item_selected == 4 =>
+                            {
+                                app.begin_theme_import();
+                            }
+                            KeyCode::Esc if app.settings_focus == SettingsFocus::Content => {
+                                app.leave_settings_content();
+                            }
+                            KeyCode::Esc => app.open_home(),
+                            _ => {}
+                        },
+                        View::ThemeImport => match key.code {
+                            KeyCode::Esc => app.cancel_theme_import(),
+                            KeyCode::Backspace => app.pop_theme_path_character(),
+                            KeyCode::Enter => {
+                                match preferences::import_theme(std::path::Path::new(
+                                    app.theme_import_draft.trim(),
+                                )) {
+                                    Ok(theme) => {
+                                        app.apply_custom_theme(theme);
+                                        save_preferences(app).await;
+                                    }
+                                    Err(message) => app.theme_import_error = Some(message),
+                                }
+                            }
+                            KeyCode::Char(character) => app.push_theme_path_character(character),
                             _ => {}
                         },
                         View::Overview => match key.code {
@@ -503,6 +573,7 @@ async fn run_event_loop(
     };
 
     let _ = shutdown_tx.send(true);
+    workers.abort_all();
     while workers.join_next().await.is_some() {}
     result
 }
@@ -512,19 +583,22 @@ async fn save_preferences(app: &mut App) {
         background_enabled: app.background_enabled,
         theme: app.theme,
         font_profile: app.font_profile,
+        custom_theme: app.custom_theme.clone(),
     };
     if let Err(message) = preferences::save(&preferences::state_path(), updated).await {
         app.settings_notice = Some(message);
     }
 }
 
-async fn install_remote_agent(target: &str) -> Result<(), String> {
+async fn install_remote_agent(target: String, event_tx: mpsc::Sender<CollectionEvent>) {
     const REMOTE_INSTALL: &str = r#"set -eu
+progress() { printf 'NEKOHUB_PROGRESS:%s:%s\n' "$1" "$2"; }
+progress 12 'Connected to remote machine'
 run_root() {
   if [ "$(id -u)" -eq 0 ]; then
     "$@"
   elif command -v sudo >/dev/null 2>&1; then
-    sudo "$@"
+    sudo -n "$@"
   else
     echo 'root access or sudo is required to install nekohub-agent' >&2
     return 1
@@ -538,6 +612,7 @@ if [ "$(dpkg --print-architecture)" != amd64 ]; then
   echo 'the nekoHub APT repository currently supports amd64 machines' >&2
   exit 1
 fi
+progress 24 'Compatibility checks passed'
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL https://awakyy1.github.io/nekohub/install.sh | run_root sh
 elif command -v wget >/dev/null 2>&1; then
@@ -546,35 +621,125 @@ else
   echo 'curl or wget is required to install the nekoHub repository' >&2
   exit 1
 fi
+progress 55 'Signed APT repository configured'
 run_root apt-get install -y nekohub-agent
+progress 82 'Agent package installed'
 if command -v systemctl >/dev/null 2>&1; then
   run_root systemctl enable --now nekohub-agent.service
   run_root systemctl is-active --quiet nekohub-agent.service
 fi
+progress 96 'Agent service is running'
 echo 'nekoHub agent is ready.'"#;
 
-    println!("\nConnecting to {target}…");
-    println!("SSH or sudo may ask for a password. nekoHub never stores it.\n");
-    let status = tokio::process::Command::new("ssh")
-        .arg("-tt")
+    let result = run_remote_command(&target, REMOTE_INSTALL, &event_tx).await;
+    let event = match result {
+        Ok(()) => CollectionEvent::RemoteInstallComplete { target },
+        Err(message) => CollectionEvent::RemoteInstallError { message },
+    };
+    let _ = event_tx.send(event).await;
+}
+
+async fn uninstall_remote_agent(target: String, event_tx: mpsc::Sender<CollectionEvent>) {
+    const REMOTE_UNINSTALL: &str = r#"set -eu
+progress() { printf 'NEKOHUB_PROGRESS:%s:%s\n' "$1" "$2"; }
+run_root() {
+  if [ "$(id -u)" -eq 0 ]; then "$@";
+  elif command -v sudo >/dev/null 2>&1; then sudo -n "$@";
+  else echo 'root access or sudo is required' >&2; return 1; fi
+}
+progress 15 'Connected to remote machine'
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo 'remote removal currently supports Debian and Ubuntu' >&2; exit 1
+fi
+progress 35 'Stopping nekoHub agent'
+if command -v systemctl >/dev/null 2>&1; then
+  run_root systemctl disable --now nekohub-agent.service 2>/dev/null || true
+fi
+progress 60 'Removing agent package'
+run_root apt-get remove -y nekohub-agent
+progress 95 'Agent removed'
+echo 'nekoHub agent was uninstalled.'"#;
+    let result = run_remote_command(&target, REMOTE_UNINSTALL, &event_tx).await;
+    let event = match result {
+        Ok(()) => CollectionEvent::RemoteUninstallComplete { target },
+        Err(message) => CollectionEvent::RemoteInstallError { message },
+    };
+    let _ = event_tx.send(event).await;
+}
+
+async fn run_remote_command(
+    target: &str,
+    command: &str,
+    event_tx: &mpsc::Sender<CollectionEvent>,
+) -> Result<(), String> {
+    let mut child = tokio::process::Command::new("ssh")
+        .arg("-T")
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=12")
         .arg(target)
-        .arg(REMOTE_INSTALL)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .await
+        .arg(command)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
         .map_err(|error| format!("Could not start SSH: {error}"))?;
+    let stdout = child.stdout.take().ok_or("Could not read SSH output")?;
+    let stderr = child.stderr.take().ok_or("Could not read SSH errors")?;
+    let mut stdout = BufReader::new(stdout).lines();
+    let mut stderr = BufReader::new(stderr).lines();
+    let mut stdout_open = true;
+    let mut stderr_open = true;
+    while stdout_open || stderr_open {
+        tokio::select! {
+            line = stdout.next_line(), if stdout_open => match line {
+                Ok(Some(line)) => send_remote_install_line(event_tx, line).await,
+                Ok(None) => stdout_open = false,
+                Err(error) => return Err(format!("Could not read SSH output: {error}")),
+            },
+            line = stderr.next_line(), if stderr_open => match line {
+                Ok(Some(line)) => send_remote_install_line(event_tx, line).await,
+                Ok(None) => stderr_open = false,
+                Err(error) => return Err(format!("Could not read SSH errors: {error}")),
+            },
+        }
+    }
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| format!("Could not finish SSH: {error}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "Remote installation failed with {}. Press Enter to try again.",
-            status.code().map_or_else(
-                || "an interrupted SSH session".into(),
-                |code| format!("exit code {code}")
-            )
-        ))
+        Err(
+            "SSH operation failed. Key/agent authentication and passwordless sudo are required."
+                .into(),
+        )
+    }
+}
+
+async fn send_remote_install_line(event_tx: &mpsc::Sender<CollectionEvent>, line: String) {
+    if let Some(payload) = line.strip_prefix("NEKOHUB_PROGRESS:")
+        && let Some((progress, message)) = payload.split_once(':')
+        && let Ok(progress) = progress.parse()
+    {
+        let _ = event_tx
+            .send(CollectionEvent::RemoteInstallProgress {
+                progress,
+                message: message.into(),
+            })
+            .await;
+        return;
+    }
+    let compact = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !compact.is_empty() {
+        let _ = event_tx
+            .send(CollectionEvent::RemoteInstallLog(
+                compact.chars().take(140).collect(),
+            ))
+            .await;
     }
 }
 

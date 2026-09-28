@@ -5,7 +5,7 @@ use nekohub_core::{HostSnapshot, HostTarget};
 use crate::{
     groups::MachineGroup,
     machines::INSTALLED_TAG,
-    preferences::{FontProfile, Theme},
+    preferences::{CustomTheme, FontProfile, Theme},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,7 +17,10 @@ pub enum View {
     CreateGroup,
     RemotePicker,
     RemoteInstall,
+    RemoteUninstallConfirm,
+    RemoteInstallProgress,
     Settings,
+    ThemeImport,
     Overview,
     Detail,
 }
@@ -26,6 +29,12 @@ pub enum View {
 pub enum HomeFocus {
     Navigation,
     Groups,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsFocus {
+    Sidebar,
+    Content,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,12 +84,17 @@ pub struct App {
     pub home_nav_selected: usize,
     pub home_selected: usize,
     pub settings_selected: usize,
+    pub settings_focus: SettingsFocus,
+    pub settings_item_selected: usize,
     pub monitor_selected: usize,
     pub navigation_motion: Option<NavigationMotion>,
     pub background_enabled: bool,
     pub theme: Theme,
     pub font_profile: FontProfile,
+    pub custom_theme: Option<CustomTheme>,
     pub settings_notice: Option<String>,
+    pub theme_import_draft: String,
+    pub theme_import_error: Option<String>,
     pub machine_groups: Vec<MachineGroup>,
     pub group_draft: String,
     pub group_error: Option<String>,
@@ -89,6 +103,11 @@ pub struct App {
     pub remote_selected: usize,
     pub remote_install_draft: String,
     pub remote_install_error: Option<String>,
+    pub remote_install_progress: u16,
+    pub remote_install_message: String,
+    pub remote_install_logs: VecDeque<String>,
+    pub remote_install_complete: bool,
+    pub remote_uninstalling: bool,
     pub animation_tick: u64,
     pub welcome_notice: Option<String>,
     pub remote_notice: Option<String>,
@@ -113,12 +132,17 @@ impl App {
             home_nav_selected: 0,
             home_selected: 0,
             settings_selected: 0,
+            settings_focus: SettingsFocus::Sidebar,
+            settings_item_selected: 0,
             monitor_selected: 0,
             navigation_motion: None,
             background_enabled: true,
             theme: Theme::default(),
             font_profile: FontProfile::default(),
+            custom_theme: None,
             settings_notice: None,
+            theme_import_draft: String::new(),
+            theme_import_error: None,
             machine_groups,
             group_draft: String::new(),
             group_error: None,
@@ -127,6 +151,11 @@ impl App {
             remote_selected: 0,
             remote_install_draft: String::new(),
             remote_install_error: None,
+            remote_install_progress: 0,
+            remote_install_message: String::new(),
+            remote_install_logs: VecDeque::with_capacity(12),
+            remote_install_complete: false,
+            remote_uninstalling: false,
             animation_tick: 0,
             welcome_notice: None,
             remote_notice: None,
@@ -157,12 +186,17 @@ impl App {
             home_nav_selected: 0,
             home_selected: 0,
             settings_selected: 0,
+            settings_focus: SettingsFocus::Sidebar,
+            settings_item_selected: 0,
             monitor_selected: 0,
             navigation_motion: None,
             background_enabled: true,
             theme: Theme::default(),
             font_profile: FontProfile::default(),
+            custom_theme: None,
             settings_notice: None,
+            theme_import_draft: String::new(),
+            theme_import_error: None,
             machine_groups: Vec::new(),
             group_draft: String::new(),
             group_error: None,
@@ -171,6 +205,11 @@ impl App {
             remote_selected: 0,
             remote_install_draft: String::new(),
             remote_install_error: None,
+            remote_install_progress: 0,
+            remote_install_message: String::new(),
+            remote_install_logs: VecDeque::with_capacity(12),
+            remote_install_complete: false,
+            remote_uninstalling: false,
             animation_tick: 0,
             welcome_notice: None,
             remote_notice: None,
@@ -375,16 +414,54 @@ impl App {
         let from = shell_navigation_index(self.view).unwrap_or(2);
         self.start_navigation_motion(from, 2, 8);
         self.view = View::Settings;
+        self.settings_focus = SettingsFocus::Sidebar;
     }
 
     pub fn next_setting(&mut self) {
-        self.settings_selected = (self.settings_selected + 1) % 5;
+        if self.settings_focus == SettingsFocus::Sidebar {
+            self.settings_selected = (self.settings_selected + 1) % 5;
+        } else {
+            self.settings_item_selected =
+                (self.settings_item_selected + 1) % self.settings_item_count();
+        }
         self.settings_notice = None;
     }
 
     pub fn previous_setting(&mut self) {
-        self.settings_selected = self.settings_selected.checked_sub(1).unwrap_or(4);
+        if self.settings_focus == SettingsFocus::Sidebar {
+            self.settings_selected = self.settings_selected.checked_sub(1).unwrap_or(4);
+        } else {
+            self.settings_item_selected = self
+                .settings_item_selected
+                .checked_sub(1)
+                .unwrap_or(self.settings_item_count() - 1);
+        }
         self.settings_notice = None;
+    }
+
+    pub fn enter_settings_content(&mut self) {
+        self.settings_focus = SettingsFocus::Content;
+        self.settings_item_selected = 0;
+    }
+
+    pub fn leave_settings_content(&mut self) {
+        self.settings_focus = SettingsFocus::Sidebar;
+    }
+
+    pub fn toggle_settings_focus(&mut self) {
+        if self.settings_focus == SettingsFocus::Sidebar {
+            self.enter_settings_content();
+        } else {
+            self.leave_settings_content();
+        }
+    }
+
+    fn settings_item_count(&self) -> usize {
+        match self.settings_selected {
+            0 => 2,
+            1 => 5,
+            _ => 1,
+        }
     }
 
     pub fn toggle_background(&mut self) {
@@ -404,6 +481,45 @@ impl App {
     pub fn previous_theme(&mut self) {
         self.theme = self.theme.previous();
         self.settings_notice = Some(format!("{} theme applied.", self.theme.label()));
+    }
+
+    pub fn apply_builtin_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.settings_notice = Some(format!("{} theme applied.", theme.label()));
+    }
+
+    pub fn begin_theme_import(&mut self) {
+        self.theme_import_draft.clear();
+        self.theme_import_error = None;
+        self.view = View::ThemeImport;
+    }
+
+    pub fn push_theme_path_character(&mut self, character: char) {
+        if self.theme_import_draft.chars().count() < 240 && !character.is_control() {
+            self.theme_import_draft.push(character);
+            self.theme_import_error = None;
+        }
+    }
+
+    pub fn pop_theme_path_character(&mut self) {
+        self.theme_import_draft.pop();
+        self.theme_import_error = None;
+    }
+
+    pub fn cancel_theme_import(&mut self) {
+        self.theme_import_draft.clear();
+        self.theme_import_error = None;
+        self.view = View::Settings;
+    }
+
+    pub fn apply_custom_theme(&mut self, theme: CustomTheme) {
+        let name = theme.name.clone();
+        self.custom_theme = Some(theme);
+        self.theme = Theme::Custom;
+        self.theme_import_draft.clear();
+        self.theme_import_error = None;
+        self.settings_notice = Some(format!("{name} imported and applied."));
+        self.view = View::Settings;
     }
 
     pub fn next_font_profile(&mut self) {
@@ -514,10 +630,33 @@ impl App {
     }
 
     pub fn begin_remote_install(&mut self) {
+        self.remote_uninstalling = false;
         self.remote_install_draft.clear();
         self.remote_install_error = None;
         self.remote_notice = None;
         self.view = View::RemoteInstall;
+    }
+
+    pub fn start_remote_install_progress(&mut self) {
+        self.remote_uninstalling = false;
+        self.remote_install_progress = 2;
+        self.remote_install_message = "Starting SSH connection".into();
+        self.remote_install_logs.clear();
+        self.remote_install_error = None;
+        self.remote_install_complete = false;
+        self.view = View::RemoteInstallProgress;
+    }
+
+    pub fn update_remote_install(&mut self, progress: u16, message: String) {
+        self.remote_install_progress = progress.min(100);
+        self.remote_install_message = message;
+    }
+
+    pub fn push_remote_install_log(&mut self, line: String) {
+        if self.remote_install_logs.len() == 12 {
+            self.remote_install_logs.pop_front();
+        }
+        self.remote_install_logs.push_back(line);
     }
 
     pub fn push_remote_install_character(&mut self, character: char) {
@@ -536,6 +675,39 @@ impl App {
         self.remote_install_draft.clear();
         self.remote_install_error = None;
         self.view = View::RemotePicker;
+    }
+
+    pub fn begin_remote_uninstall(&mut self) {
+        let Some(machine) = self.selected_installed_remote() else {
+            self.remote_notice = Some("Select a machine with an installed agent first.".into());
+            return;
+        };
+        self.remote_install_draft.clone_from(&machine.alias);
+        self.remote_install_error = None;
+        self.remote_uninstalling = true;
+        self.view = View::RemoteUninstallConfirm;
+    }
+
+    pub fn cancel_remote_uninstall(&mut self) {
+        self.remote_uninstalling = false;
+        self.view = View::RemotePicker;
+    }
+
+    pub fn start_remote_uninstall_progress(&mut self) {
+        self.remote_install_progress = 2;
+        self.remote_install_message = "Starting SSH connection".into();
+        self.remote_install_logs.clear();
+        self.remote_install_error = None;
+        self.remote_install_complete = false;
+        self.remote_uninstalling = true;
+        self.view = View::RemoteInstallProgress;
+    }
+
+    pub fn selected_installed_remote(&self) -> Option<&HostTarget> {
+        self.remote_selected
+            .checked_sub(1)
+            .and_then(|index| self.remote_hosts.get(index))
+            .filter(|machine| machine.tags.iter().any(|tag| tag == INSTALLED_TAG))
     }
 
     pub fn remote_install_target(&mut self) -> Result<String, String> {
@@ -573,17 +745,46 @@ impl App {
             .iter()
             .position(|machine| machine.alias == target)
             .map_or(0, |index| index + 1);
-        self.remote_install_draft.clear();
+        self.remote_install_progress = 100;
+        self.remote_install_message = "Agent installed and service verified".into();
+        self.remote_install_complete = true;
         self.remote_install_error = None;
-        self.remote_notice = Some(format!(
-            "Agent installed on {target}. The machine is now registered in nekoHub."
-        ));
-        self.view = View::RemotePicker;
+        self.view = View::RemoteInstallProgress;
+    }
+
+    pub fn complete_remote_uninstall(&mut self, target: &str) {
+        if let Some(machine) = self
+            .remote_hosts
+            .iter_mut()
+            .find(|machine| machine.alias == target)
+        {
+            machine.tags.retain(|tag| tag != INSTALLED_TAG);
+        }
+        self.remote_install_progress = 100;
+        self.remote_install_message = "Agent uninstalled and machine removed from the fleet".into();
+        self.remote_install_complete = true;
+        self.remote_install_error = None;
+        self.view = View::RemoteInstallProgress;
     }
 
     pub fn fail_remote_install(&mut self, message: String) {
         self.remote_install_error = Some(message);
-        self.view = View::RemoteInstall;
+        self.remote_install_message = "Installation stopped".into();
+        self.view = View::RemoteInstallProgress;
+    }
+
+    pub fn close_remote_install_progress(&mut self) {
+        if self.remote_install_complete {
+            self.remote_notice = Some(if self.remote_uninstalling {
+                "Agent uninstalled. The SSH inventory entry remains available for reinstalling."
+                    .into()
+            } else {
+                "Agent installed and machine registered. Secure metric pairing comes next.".into()
+            });
+        }
+        self.remote_install_draft.clear();
+        self.remote_uninstalling = false;
+        self.view = View::RemotePicker;
     }
 
     pub fn explain_remote_pairing(&mut self) {
@@ -624,8 +825,13 @@ impl App {
 fn shell_navigation_index(view: View) -> Option<usize> {
     match view {
         View::Home | View::CreateGroup => Some(0),
-        View::RemotePicker | View::RemoteInstall | View::Overview | View::Detail => Some(1),
-        View::Settings => Some(2),
+        View::RemotePicker
+        | View::RemoteInstall
+        | View::RemoteUninstallConfirm
+        | View::RemoteInstallProgress
+        | View::Overview
+        | View::Detail => Some(1),
+        View::Settings | View::ThemeImport => Some(2),
         View::Welcome | View::AgentConfirm | View::AgentSetup => None,
     }
 }
@@ -765,6 +971,27 @@ mod tests {
                 .any(|tag| tag == INSTALLED_TAG)
         );
         assert_eq!(app.remote_selected, 1);
+    }
+
+    #[test]
+    fn remote_uninstall_removes_agent_registration() {
+        let mut machine = HostTarget::from_alias("ops@server");
+        machine.tags.push(INSTALLED_TAG.into());
+        let mut app = App::home(vec![machine], Vec::new());
+        app.remote_selected = 1;
+
+        app.begin_remote_uninstall();
+        assert_eq!(app.view, View::RemoteUninstallConfirm);
+        app.start_remote_uninstall_progress();
+        app.complete_remote_uninstall("ops@server");
+
+        assert!(
+            app.remote_hosts[0]
+                .tags
+                .iter()
+                .all(|tag| tag != INSTALLED_TAG)
+        );
+        assert_eq!(app.remote_install_progress, 100);
     }
 
     #[test]

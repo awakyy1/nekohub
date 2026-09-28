@@ -19,9 +19,9 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, HomeFocus, HostState, View},
+    app::{App, HomeFocus, HostState, SettingsFocus, View},
     machines::INSTALLED_TAG,
-    preferences::{FontProfile, Theme},
+    preferences::{CustomTheme, FontProfile, Theme},
 };
 
 const AMBER: Color = Color::Rgb(126, 213, 177);
@@ -40,7 +40,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     render_content(frame, app);
     frame.render_widget(
         ThemeOverlay {
-            accent: theme_color(app.theme),
+            palette: theme_palette(app.theme, app.custom_theme.as_ref()),
             font_profile: app.font_profile,
         },
         area,
@@ -80,8 +80,23 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
             render_remote_install(frame, frame.area(), app);
             return;
         }
+        View::RemoteUninstallConfirm => {
+            render_remote_picker(frame, frame.area(), app);
+            render_remote_uninstall_confirmation(frame, frame.area(), app);
+            return;
+        }
+        View::RemoteInstallProgress => {
+            render_remote_picker(frame, frame.area(), app);
+            render_remote_install_progress(frame, frame.area(), app);
+            return;
+        }
         View::Settings => {
             render_settings(frame, frame.area(), app);
+            return;
+        }
+        View::ThemeImport => {
+            render_settings(frame, frame.area(), app);
+            render_theme_import(frame, frame.area(), app);
             return;
         }
         View::Overview | View::Detail => {}
@@ -108,14 +123,17 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
         | View::CreateGroup
         | View::RemotePicker
         | View::RemoteInstall
-        | View::Settings => {
+        | View::RemoteUninstallConfirm
+        | View::RemoteInstallProgress
+        | View::Settings
+        | View::ThemeImport => {
             unreachable!("setup views return before shell render")
         }
     }
 }
 
 struct ThemeOverlay {
-    accent: Color,
+    palette: ThemePalette,
     font_profile: FontProfile,
 }
 
@@ -127,11 +145,23 @@ impl Widget for ThemeOverlay {
                     continue;
                 };
                 let style = cell.style();
-                if style.fg == Some(AMBER) {
-                    cell.set_fg(self.accent);
+                let recolor = |color| match color {
+                    AMBER => self.palette.primary,
+                    ORANGE => self.palette.secondary,
+                    CYAN => self.palette.tertiary,
+                    GREEN => self.palette.success,
+                    INK => self.palette.background,
+                    SURFACE => self.palette.surface,
+                    LINE => self.palette.border,
+                    TEXT => self.palette.text,
+                    DIM => self.palette.muted,
+                    other => other,
+                };
+                if let Some(foreground) = style.fg {
+                    cell.set_fg(recolor(foreground));
                 }
-                if style.bg == Some(AMBER) {
-                    cell.set_bg(self.accent);
+                if let Some(background) = style.bg {
+                    cell.set_bg(recolor(background));
                 }
                 let replacement = match (self.font_profile, cell.symbol()) {
                     (FontProfile::Compact, "◆") => Some("▸"),
@@ -156,13 +186,95 @@ impl Widget for ThemeOverlay {
     }
 }
 
-const fn theme_color(theme: Theme) -> Color {
+#[derive(Clone, Copy)]
+struct ThemePalette {
+    primary: Color,
+    secondary: Color,
+    tertiary: Color,
+    success: Color,
+    background: Color,
+    surface: Color,
+    border: Color,
+    text: Color,
+    muted: Color,
+}
+
+fn theme_palette(theme: Theme, custom: Option<&CustomTheme>) -> ThemePalette {
     match theme {
-        Theme::Pink => Color::Rgb(239, 139, 181),
-        Theme::Blue => Color::Rgb(112, 166, 255),
-        Theme::Red => Color::Rgb(235, 101, 101),
-        Theme::Purple => Color::Rgb(180, 132, 255),
+        Theme::Pink => ThemePalette {
+            primary: Color::Rgb(239, 139, 181),
+            secondary: Color::Rgb(244, 174, 151),
+            tertiary: Color::Rgb(190, 159, 235),
+            success: Color::Rgb(124, 218, 181),
+            background: Color::Rgb(20, 14, 18),
+            surface: Color::Rgb(34, 23, 31),
+            border: Color::Rgb(80, 51, 69),
+            text: Color::Rgb(241, 224, 233),
+            muted: Color::Rgb(145, 111, 130),
+        },
+        Theme::Blue => ThemePalette {
+            primary: Color::Rgb(112, 166, 255),
+            secondary: Color::Rgb(104, 205, 225),
+            tertiary: Color::Rgb(145, 132, 238),
+            success: Color::Rgb(104, 218, 185),
+            background: Color::Rgb(9, 15, 26),
+            surface: Color::Rgb(16, 28, 46),
+            border: Color::Rgb(42, 67, 100),
+            text: Color::Rgb(218, 230, 247),
+            muted: Color::Rgb(100, 122, 151),
+        },
+        Theme::Red => ThemePalette {
+            primary: Color::Rgb(235, 101, 101),
+            secondary: Color::Rgb(241, 157, 91),
+            tertiary: Color::Rgb(218, 114, 137),
+            success: Color::Rgb(126, 207, 145),
+            background: Color::Rgb(22, 11, 11),
+            surface: Color::Rgb(39, 20, 19),
+            border: Color::Rgb(91, 45, 43),
+            text: Color::Rgb(244, 225, 218),
+            muted: Color::Rgb(150, 105, 96),
+        },
+        Theme::Purple => ThemePalette {
+            primary: Color::Rgb(180, 132, 255),
+            secondary: Color::Rgb(232, 132, 211),
+            tertiary: Color::Rgb(113, 165, 246),
+            success: Color::Rgb(111, 218, 193),
+            background: Color::Rgb(15, 10, 25),
+            surface: Color::Rgb(28, 19, 45),
+            border: Color::Rgb(66, 47, 96),
+            text: Color::Rgb(233, 224, 247),
+            muted: Color::Rgb(126, 107, 153),
+        },
+        Theme::Custom => custom.map_or_else(
+            || theme_palette(Theme::Pink, None),
+            |theme| ThemePalette {
+                primary: hex_color(&theme.primary),
+                secondary: hex_color(&theme.secondary),
+                tertiary: hex_color(&theme.tertiary),
+                success: hex_color(&theme.success),
+                background: hex_color(&theme.background),
+                surface: hex_color(&theme.surface),
+                border: hex_color(&theme.border),
+                text: hex_color(&theme.text),
+                muted: hex_color(&theme.muted),
+            },
+        ),
     }
+}
+
+fn theme_color(theme: Theme) -> Color {
+    theme_palette(theme, None).primary
+}
+
+fn hex_color(value: &str) -> Color {
+    let value = value.trim_start_matches('#');
+    let component = |range| {
+        value
+            .get(range)
+            .and_then(|part| u8::from_str_radix(part, 16).ok())
+            .unwrap_or(255)
+    };
+    Color::Rgb(component(0..2), component(2..4), component(4..6))
 }
 
 fn render_agent_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -239,6 +351,7 @@ fn render_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
+            Constraint::Length(6),
             Constraint::Min(8),
             Constraint::Length(1),
         ])
@@ -260,13 +373,55 @@ fn render_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         animated_area(rows[0], app, 0, 3),
     );
-    render_group_grid(frame, rows[1], app);
+    render_home_machine_shelf(frame, rows[1], app);
+    render_group_grid(frame, rows[2], app);
     if let Some(notice) = app.home_notice.as_deref() {
         frame.render_widget(
             Paragraph::new(notice)
                 .style(Style::default().fg(ORANGE))
                 .alignment(Alignment::Center),
-            rows[2],
+            rows[3],
+        );
+    }
+}
+
+fn render_home_machine_shelf(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let mut machines = vec![(&app.local_name, true, true)];
+    machines.extend(app.remote_hosts.iter().map(|host| {
+        (
+            &host.display_name,
+            false,
+            host.tags.iter().any(|tag| tag == INSTALLED_TAG),
+        )
+    }));
+    let visible = usize::from(area.width / 24).max(1).min(machines.len());
+    let cards = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![Constraint::Length(23); visible])
+        .split(area);
+    for (index, (name, local, installed)) in machines.into_iter().take(visible).enumerate() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled(clipped(name, 19), Style::default().fg(TEXT).bold()),
+                Line::styled(
+                    if local {
+                        "local machine"
+                    } else if installed {
+                        "agent installed"
+                    } else {
+                        "SSH inventory"
+                    },
+                    Style::default().fg(if installed { GREEN } else { DIM }),
+                ),
+            ])
+            .block(
+                Block::default()
+                    .title(if index == 0 { " MACHINES " } else { " " })
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(if installed { GREEN } else { LINE })),
+            ),
+            cards[index],
         );
     }
 }
@@ -706,7 +861,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area,
         app,
         2,
-        "↑↓ section  ·  ←→ choose  ·  Enter apply  ·  Esc home  ·  q quit",
+        "Tab switch pane  ·  ↑↓ navigate  ·  Enter select  ·  ← back  ·  Esc home",
     );
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -737,9 +892,10 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .split(columns[0]);
     for (index, (title, _, color)) in sections.iter().enumerate() {
         let selected = app.settings_selected == index;
+        let focused = selected && app.settings_focus == SettingsFocus::Sidebar;
         frame.render_widget(
             Paragraph::new(format!("{} {title}", if selected { "›" } else { " " }))
-                .style(if selected {
+                .style(if focused {
                     Style::default().fg(INK).bg(*color).bold()
                 } else {
                     Style::default().fg(Color::Gray)
@@ -748,7 +904,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
-                        .border_style(Style::default().fg(if selected { *color } else { DIM })),
+                        .border_style(Style::default().fg(if focused { *color } else { DIM })),
                 ),
             sidebar[index],
         );
@@ -779,7 +935,15 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .title(" SETTINGS ")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(color)),
+                .border_style(Style::default().fg(
+                    if app.settings_focus == SettingsFocus::Content
+                        && app.settings_item_selected == 0
+                    {
+                        AMBER
+                    } else {
+                        color
+                    },
+                )),
         ),
         columns[2],
     );
@@ -835,7 +999,15 @@ fn render_appearance_settings(frame: &mut Frame<'_>, area: Rect, app: &App, colo
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(color)),
+                .border_style(Style::default().fg(
+                    if app.settings_focus == SettingsFocus::Content
+                        && app.settings_item_selected == 0
+                    {
+                        AMBER
+                    } else {
+                        color
+                    },
+                )),
         ),
         rows[1],
     );
@@ -860,7 +1032,7 @@ fn render_appearance_settings(frame: &mut Frame<'_>, area: Rect, app: &App, colo
             Line::from(font_options.to_vec()),
             Line::from(""),
             Line::styled(
-                " ←→ changes symbols and visual density · terminal controls the real font",
+                " Enter cycles symbols and visual density · terminal controls the real font",
                 Style::default().fg(DIM),
             ),
         ])
@@ -868,7 +1040,15 @@ fn render_appearance_settings(frame: &mut Frame<'_>, area: Rect, app: &App, colo
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(color)),
+                .border_style(Style::default().fg(
+                    if app.settings_focus == SettingsFocus::Content
+                        && app.settings_item_selected == 1
+                    {
+                        AMBER
+                    } else {
+                        color
+                    },
+                )),
         ),
         rows[2],
     );
@@ -893,6 +1073,7 @@ fn render_theme_settings(frame: &mut Frame<'_>, area: Rect, app: &App, color: Co
         .constraints([
             Constraint::Length(4),
             Constraint::Length(8),
+            Constraint::Length(4),
             Constraint::Min(2),
         ])
         .split(inner);
@@ -911,7 +1092,9 @@ fn render_theme_settings(frame: &mut Frame<'_>, area: Rect, app: &App, color: Co
         .constraints([Constraint::Ratio(1, 4); 4])
         .split(rows[1]);
     for (index, theme) in Theme::ALL.into_iter().enumerate() {
-        let selected = app.theme == theme;
+        let active = app.theme == theme;
+        let selected =
+            app.settings_focus == SettingsFocus::Content && app.settings_item_selected == index;
         let swatch = theme_color(theme);
         frame.render_widget(
             Paragraph::new(vec![
@@ -919,14 +1102,14 @@ fn render_theme_settings(frame: &mut Frame<'_>, area: Rect, app: &App, color: Co
                 Line::from(""),
                 Line::styled(
                     theme.label(),
-                    if selected {
+                    if active {
                         Style::default().fg(INK).bg(swatch).bold()
                     } else {
                         Style::default().fg(TEXT)
                     },
                 ),
                 Line::styled(
-                    if selected { "● active" } else { "○ select" },
+                    if active { "● active" } else { "○ select" },
                     Style::default().fg(swatch),
                 ),
             ])
@@ -935,19 +1118,131 @@ fn render_theme_settings(frame: &mut Frame<'_>, area: Rect, app: &App, color: Co
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(if selected { swatch } else { LINE })),
+                    .border_style(Style::default().fg(if selected {
+                        AMBER
+                    } else if active {
+                        swatch
+                    } else {
+                        LINE
+                    })),
             ),
             cards[index],
         );
     }
+    let import_selected =
+        app.settings_focus == SettingsFocus::Content && app.settings_item_selected == 4;
+    let custom_label = app
+        .custom_theme
+        .as_ref()
+        .map_or("Load a community palette from a JSON file", |theme| {
+            theme.name.as_str()
+        });
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " + Import / upload theme  ",
+                Style::default().fg(TEXT).bold(),
+            ),
+            Span::styled(custom_label, Style::default().fg(DIM)),
+            Span::styled(
+                if app.theme == Theme::Custom {
+                    "  ● active"
+                } else {
+                    ""
+                },
+                Style::default().fg(AMBER),
+            ),
+        ]))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(if import_selected { AMBER } else { LINE })),
+        ),
+        rows[2],
+    );
     let message = app
         .settings_notice
         .as_deref()
-        .unwrap_or("Use ←→ or Enter to preview. Changes are saved immediately.");
+        .unwrap_or("Use ↑↓ and Enter. Changes are saved immediately.");
     frame.render_widget(
         Paragraph::new(message).style(Style::default().fg(color)),
-        rows[2],
+        rows[3],
     );
+}
+
+fn render_theme_import(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(82);
+    let height = area.height.min(20);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .title(" IMPORT COMMUNITY THEME ")
+        .title_bottom(Line::from(" Enter import  ·  Esc cancel ").centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(AMBER))
+        .style(canvas_style(app));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6),
+            Constraint::Length(3),
+            Constraint::Min(3),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                "Choose a nekoHub theme JSON file.",
+                Style::default().fg(TEXT).bold(),
+            ),
+            Line::from(""),
+            Line::styled(
+                "Required: name, primary, secondary, tertiary, success, background,",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::styled(
+                "surface, border, text and muted.",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::styled("Colors use #RRGGBB.", Style::default().fg(DIM)),
+        ])
+        .alignment(Alignment::Center),
+        rows[0],
+    );
+    let cursor = if app.animation_tick % 10 < 5 {
+        "_"
+    } else {
+        " "
+    };
+    frame.render_widget(
+        Paragraph::new(format!(" {}{cursor}", app.theme_import_draft)).block(
+            Block::default()
+                .title(" Theme file path ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(AMBER)),
+        ),
+        rows[1],
+    );
+    if let Some(error) = app.theme_import_error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(error)
+                .style(Style::default().fg(RED))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true }),
+            rows[2],
+        );
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1186,12 +1481,12 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area,
         app,
         1,
-        "↑↓ select  ·  Enter open  ·  + install agent  ·  Esc home  ·  q quit",
+        "↑↓ select  ·  Enter open  ·  u uninstall selected agent  ·  Esc home  ·  q quit",
     );
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(6),
             Constraint::Min(7),
             Constraint::Length(4),
         ])
@@ -1295,22 +1590,44 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(table, panel);
 
     let install_selected = app.remote_install_selected();
+    let can_uninstall = app.selected_installed_remote().is_some();
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                if install_selected { " › + " } else { "   + " },
-                Style::default().fg(AMBER).bold(),
-            ),
-            Span::styled(
-                "Install agent over SSH",
-                if install_selected {
-                    Style::default().fg(INK).bg(AMBER).bold()
-                } else {
-                    Style::default().fg(TEXT).bold()
-                },
-            ),
-            Span::styled("    Connect with user@machine", Style::default().fg(DIM)),
-        ]))
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    if install_selected { " › + " } else { "   + " },
+                    Style::default().fg(AMBER).bold(),
+                ),
+                Span::styled(
+                    "Install agent over SSH",
+                    if install_selected {
+                        Style::default().fg(INK).bg(AMBER).bold()
+                    } else {
+                        Style::default().fg(TEXT).bold()
+                    },
+                ),
+                Span::styled("    Connect with user@machine", Style::default().fg(DIM)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "   [u] ",
+                    Style::default()
+                        .fg(if can_uninstall { RED } else { DIM })
+                        .bold(),
+                ),
+                Span::styled(
+                    "Uninstall selected agent",
+                    Style::default()
+                        .fg(if can_uninstall { TEXT } else { DIM })
+                        .bold(),
+                ),
+                Span::styled(
+                    "    Removes it from the monitored fleet",
+                    Style::default().fg(DIM),
+                ),
+            ]),
+        ])
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -1318,6 +1635,53 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .border_style(Style::default().fg(if install_selected { AMBER } else { LINE })),
         ),
         rows[2],
+    );
+}
+
+fn render_remote_uninstall_confirmation(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(72);
+    let height = area.height.min(14);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("UNINSTALL REMOTE AGENT", Style::default().fg(RED).bold()),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Machine  ", Style::default().fg(DIM)),
+                Span::styled(
+                    app.remote_install_draft.as_str(),
+                    Style::default().fg(TEXT).bold(),
+                ),
+            ]),
+            Line::from(""),
+            Line::styled(
+                "This removes nekohub-agent from the machine and unregisters it from monitoring.",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::from(""),
+            Line::styled(
+                "Press Enter to uninstall, or Esc to cancel.",
+                Style::default().fg(RED),
+            ),
+        ])
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .title(" CONFIRM REMOVAL ")
+                .title_bottom(Line::from(" Enter uninstall  ·  Esc cancel ").centered())
+                .borders(Borders::ALL)
+                .border_type(BorderType::Thick)
+                .border_style(Style::default().fg(RED))
+                .style(canvas_style(app)),
+        ),
+        modal,
     );
 }
 
@@ -1364,7 +1728,7 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Style::default().fg(Color::Gray),
             ),
             Line::styled(
-                "Passwords are handled by SSH and sudo. They are never read or saved by nekoHub.",
+                "Use an SSH key or agent. Remote root or passwordless sudo is required.",
                 Style::default().fg(DIM),
             ),
         ])
@@ -1391,7 +1755,7 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Paragraph::new(vec![
             Line::styled("What happens next", Style::default().fg(AMBER).bold()),
             Line::styled(
-                "The interface briefly yields to the normal SSH session for host verification and password prompts.",
+                "Setup stays inside nekoHub with live progress and installation output.",
                 Style::default().fg(Color::Gray),
             ),
         ])
@@ -1403,6 +1767,133 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Paragraph::new(error)
                 .style(Style::default().fg(RED))
                 .alignment(Alignment::Center),
+            rows[3],
+        );
+    }
+}
+
+fn render_remote_install_progress(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(86);
+    let height = area.height.min(24);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    let failed = app.remote_install_error.is_some();
+    let accent = if failed {
+        RED
+    } else if app.remote_install_complete {
+        GREEN
+    } else {
+        AMBER
+    };
+    let footer = if app.remote_install_complete || failed {
+        " Enter return to Machines "
+    } else {
+        " Installing over SSH · nekoHub stays open "
+    };
+    let block = Block::default()
+        .title(if app.remote_uninstalling {
+            " REMOTE AGENT REMOVAL "
+        } else {
+            " REMOTE AGENT SETUP "
+        })
+        .title_bottom(Line::from(footer).centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(accent))
+        .style(canvas_style(app));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Min(7),
+            Constraint::Length(3),
+        ])
+        .split(inner);
+    let activity = ["·", "•", "●", "•"][(app.animation_tick as usize / 3) % 4];
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                if failed {
+                    "INSTALLATION STOPPED"
+                } else if app.remote_uninstalling && app.remote_install_complete {
+                    "AGENT REMOVED"
+                } else if app.remote_uninstalling {
+                    "UNINSTALLING NEKOHUB AGENT"
+                } else if app.remote_install_complete {
+                    "AGENT READY"
+                } else {
+                    "INSTALLING NEKOHUB AGENT"
+                },
+                Style::default().fg(accent).bold(),
+            ),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(format!("{activity} "), Style::default().fg(accent)),
+                Span::styled(
+                    app.remote_install_message.as_str(),
+                    Style::default().fg(TEXT),
+                ),
+            ]),
+        ])
+        .alignment(Alignment::Center),
+        rows[0],
+    );
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(Style::default().fg(accent).bg(DIM))
+            .ratio(f64::from(app.remote_install_progress) / 100.0)
+            .label(format!("{}%", app.remote_install_progress)),
+        Rect::new(
+            rows[1].x + 3,
+            rows[1].y + 1,
+            rows[1].width.saturating_sub(6),
+            1,
+        ),
+    );
+    let logs = app
+        .remote_install_logs
+        .iter()
+        .rev()
+        .take(rows[2].height.saturating_sub(2) as usize)
+        .rev()
+        .map(|line| Line::styled(format!("  {line}"), Style::default().fg(Color::Gray)))
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(logs)
+            .block(
+                Block::default()
+                    .title(" live output ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(LINE)),
+            )
+            .wrap(Wrap { trim: true }),
+        rows[2],
+    );
+    if let Some(error) = app.remote_install_error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(error)
+                .style(Style::default().fg(RED))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true }),
+            rows[3],
+        );
+    } else if app.remote_install_complete {
+        frame.render_widget(
+            Paragraph::new(if app.remote_uninstalling {
+                "Agent removed from the monitored fleet."
+            } else {
+                "Machine registered. Metric pairing is the next step."
+            })
+            .style(Style::default().fg(GREEN).bold())
+            .alignment(Alignment::Center),
             rows[3],
         );
     }
@@ -2680,15 +3171,30 @@ mod tests {
             app.open_settings();
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.settings_selected = 1;
+            app.enter_settings_content();
+            app.settings_item_selected = 4;
             app.theme = Theme::Purple;
             app.font_profile = FontProfile::Ascii;
             terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.begin_theme_import();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.cancel_theme_import();
             app.open_remote_picker();
             app.remote_selected = app.remote_item_count() - 1;
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.begin_remote_install();
             terminal.draw(|frame| render(frame, &app)).unwrap();
-            app.cancel_remote_install();
+            app.start_remote_install_progress();
+            app.update_remote_install(55, "Repository configured".into());
+            app.push_remote_install_log("Installing nekohub-agent".into());
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.complete_remote_install("ops@server");
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.close_remote_install_progress();
+            app.remote_selected = 1;
+            app.begin_remote_uninstall();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.cancel_remote_uninstall();
             app.start_monitoring(nekohub_core::HostTarget::from_alias("local"));
             terminal.draw(|frame| render(frame, &app)).unwrap();
         }

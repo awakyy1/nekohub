@@ -1,0 +1,12 @@
+{
+  "name": "Moonlight",
+  "primary": "#f08fba",
+  "secondary": "#f2ad93",
+  "tertiary": "#bd9fe8",
+  "success": "#7bd9b5",
+  "background": "#140e12",
+  "surface": "#22171f",
+  "border": "#503345",
+  "text": "#f1e0e9",
+  "muted": "#916f82"
+}
