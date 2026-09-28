@@ -435,10 +435,6 @@ impl App {
         Ok(())
     }
 
-    pub fn show_empty_group_notice(&mut self) {
-        self.home_notice = Some("This group is empty. Add machines from Machines.".into());
-    }
-
     pub fn open_group(&mut self) {
         if self.home_selected < self.machine_groups.len() {
             self.active_group = self.home_selected;
@@ -455,7 +451,7 @@ impl App {
             self.remote_notice = Some("Create a group from Home first.".into());
             return;
         }
-        if self.remote_selected >= self.remote_hosts.len() + 1 {
+        if self.remote_selected > self.remote_hosts.len() {
             self.remote_notice = Some("Select a machine first.".into());
             return;
         }

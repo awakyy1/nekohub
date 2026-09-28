@@ -790,7 +790,7 @@ async fn run_remote_command(
     if let Some(password) = password
         && let Some(mut stdin) = child.stdin.take()
     {
-        let passwords = format!("{}\n", password).repeat(12);
+        let passwords = format!("{password}\n").repeat(12);
         stdin
             .write_all(passwords.as_bytes())
             .await

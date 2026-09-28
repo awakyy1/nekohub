@@ -1863,6 +1863,7 @@ fn render_remote_uninstall_confirmation(frame: &mut Frame<'_>, area: Rect, app: 
     );
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let width = area.width.min(76);
     let height = area.height.min(22);
