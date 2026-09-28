@@ -13,10 +13,10 @@ use app::{App, HomeFocus, SettingsFocus, View};
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
-use nekohub_agent::AgentCollector;
+use nekohub_agent::{AgentCollector, SshAgentCollector};
 use nekohub_core::{Collector, HostSnapshot, HostTarget, Inventory, RateTracker};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::{broadcast, mpsc, watch},
 };
 
@@ -294,7 +294,7 @@ async fn run_event_loop(
             Some(input) = events.next() => match input? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if matches!(key.code, KeyCode::Char('q'))
-                        && !matches!(app.view, View::CreateGroup | View::RemoteInstall | View::RemoteUninstallConfirm | View::ThemeImport)
+                        && !matches!(app.view, View::CreateGroup | View::GroupAssign | View::RemoteInstall | View::RemoteConnect | View::RemoteUninstallConfirm | View::ThemeImport)
                         || matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break Ok(());
@@ -378,12 +378,14 @@ async fn run_event_loop(
                             KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => {
                                 match app.home_focus {
                                     HomeFocus::Navigation => app.next_home_nav(),
+                                    HomeFocus::Machines => app.next_home_machine(),
                                     HomeFocus::Groups => app.next_home_item(),
                                 }
                             }
                             KeyCode::Up | KeyCode::Left | KeyCode::Char('h' | 'k') => {
                                 match app.home_focus {
                                     HomeFocus::Navigation => app.previous_home_nav(),
+                                    HomeFocus::Machines => app.previous_home_machine(),
                                     HomeFocus::Groups => app.previous_home_item(),
                                 }
                             }
@@ -394,7 +396,9 @@ async fn run_event_loop(
                                     _ => app.open_settings(),
                                 }
                             }
-                            KeyCode::Enter if app.home_selected == 0 => {
+                            KeyCode::Enter if app.home_focus == HomeFocus::Machines
+                                && app.home_machine_selected == 0 =>
+                            {
                                 if let Some(collector) = local_collector.as_ref() {
                                     let target = local_target();
                                     app.start_monitoring(target.clone());
@@ -404,10 +408,19 @@ async fn run_event_loop(
                                     );
                                 }
                             }
+                            KeyCode::Enter if app.home_focus == HomeFocus::Machines => {
+                                app.remote_selected = app.home_machine_selected;
+                                if app.selected_installed_remote().is_some() {
+                                    app.begin_remote_connect();
+                                } else {
+                                    app.open_remote_picker();
+                                    app.remote_selected = app.home_machine_selected;
+                                }
+                            }
                             KeyCode::Enter if app.home_selected + 1 == app.home_item_count() => {
                                 app.begin_group_creation();
                             }
-                            KeyCode::Enter => app.show_empty_group_notice(),
+                            KeyCode::Enter => app.open_group(),
                             _ => {}
                         },
                         View::CreateGroup => match key.code {
@@ -424,6 +437,10 @@ async fn run_event_loop(
                                 }
                             }
                             KeyCode::Char(character) => app.push_group_character(character),
+                            _ => {}
+                        },
+                        View::GroupDetail => match key.code {
+                            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.close_group(),
                             _ => {}
                         },
                         View::RemotePicker => match key.code {
@@ -443,17 +460,35 @@ async fn run_event_loop(
                             KeyCode::Enter if app.remote_install_selected() => {
                                 app.begin_remote_install();
                             }
+                            KeyCode::Enter if app.selected_installed_remote().is_some() => {
+                                app.begin_remote_connect();
+                            }
                             KeyCode::Enter => app.explain_remote_pairing(),
+                            KeyCode::Char('g') => app.begin_group_assignment(),
                             KeyCode::Char('u') | KeyCode::Delete => app.begin_remote_uninstall(),
+                            _ => {}
+                        },
+                        View::GroupAssign => match key.code {
+                            KeyCode::Down | KeyCode::Char('j') => app.next_group_assignment(),
+                            KeyCode::Up | KeyCode::Char('k') => app.previous_group_assignment(),
+                            KeyCode::Enter => {
+                                app.apply_group_assignment();
+                                if let Err(message) = groups::save(&groups::state_path(), &app.machine_groups).await {
+                                    app.remote_notice = Some(message);
+                                }
+                            }
+                            KeyCode::Esc => app.cancel_group_assignment(),
                             _ => {}
                         },
                         View::RemoteInstall => match key.code {
                             KeyCode::Esc => app.cancel_remote_install(),
+                            KeyCode::Tab | KeyCode::BackTab => app.toggle_remote_install_field(),
                             KeyCode::Backspace => app.pop_remote_install_character(),
                             KeyCode::Enter => {
                                 if let Ok(target) = app.remote_install_target() {
+                                    let password = app.take_remote_password();
                                     app.start_remote_install_progress();
-                                    workers.spawn(install_remote_agent(target, event_tx.clone()));
+                                    workers.spawn(install_remote_agent(target, password, event_tx.clone()));
                                 }
                             }
                             KeyCode::Char(character) => {
@@ -461,13 +496,37 @@ async fn run_event_loop(
                             }
                             _ => {}
                         },
+                        View::RemoteConnect => match key.code {
+                            KeyCode::Esc => app.cancel_remote_connect(),
+                            KeyCode::Backspace => app.pop_remote_install_character(),
+                            KeyCode::Enter => {
+                                if let Some(target) = app.selected_installed_remote().cloned() {
+                                    let password = app.take_remote_password();
+                                    let collector: Arc<dyn Collector> = Arc::new(
+                                        SshAgentCollector::new(
+                                            target.alias.clone(), password, Duration::from_secs(12),
+                                        )
+                                    );
+                                    app.start_monitoring(target.clone());
+                                    spawn_worker(
+                                        &mut workers, target, collector, refresh_every,
+                                        &event_tx, &refresh_tx, &shutdown_rx,
+                                    );
+                                }
+                            }
+                            KeyCode::Char(character) => app.push_remote_install_character(character),
+                            _ => {}
+                        },
                         View::RemoteUninstallConfirm => match key.code {
                             KeyCode::Esc => app.cancel_remote_uninstall(),
+                            KeyCode::Backspace => app.pop_remote_install_character(),
                             KeyCode::Enter => {
                                 let target = app.remote_install_draft.clone();
+                                let password = app.take_remote_password();
                                 app.start_remote_uninstall_progress();
-                                workers.spawn(uninstall_remote_agent(target, event_tx.clone()));
+                                workers.spawn(uninstall_remote_agent(target, password, event_tx.clone()));
                             }
+                            KeyCode::Char(character) => app.push_remote_install_character(character),
                             _ => {}
                         },
                         View::RemoteInstallProgress => match key.code {
@@ -587,13 +646,19 @@ async fn save_preferences(app: &mut App) {
     }
 }
 
-async fn install_remote_agent(target: String, event_tx: mpsc::Sender<CollectionEvent>) {
+async fn install_remote_agent(
+    target: String,
+    password: Option<String>,
+    event_tx: mpsc::Sender<CollectionEvent>,
+) {
     const REMOTE_INSTALL: &str = r#"set -eu
 progress() { printf 'NEKOHUB_PROGRESS:%s:%s\n' "$1" "$2"; }
 progress 12 'Connected to remote machine'
 run_root() {
   if [ "$(id -u)" -eq 0 ]; then
     "$@"
+  elif [ "${NEKOHUB_SUDO_STDIN:-0}" = 1 ]; then
+    sudo -S -p '' "$@"
   elif command -v sudo >/dev/null 2>&1; then
     sudo -n "$@"
   else
@@ -610,14 +675,17 @@ if [ "$(dpkg --print-architecture)" != amd64 ]; then
   exit 1
 fi
 progress 24 'Compatibility checks passed'
+installer=$(mktemp)
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL https://awakyy1.github.io/nekohub/install.sh | run_root sh
+  curl -fsSL https://awakyy1.github.io/nekohub/install.sh -o "$installer"
 elif command -v wget >/dev/null 2>&1; then
-  wget -qO- https://awakyy1.github.io/nekohub/install.sh | run_root sh
+  wget -qO "$installer" https://awakyy1.github.io/nekohub/install.sh
 else
   echo 'curl or wget is required to install the nekoHub repository' >&2
   exit 1
 fi
+run_root sh "$installer"
+rm -f "$installer"
 progress 55 'Signed APT repository configured'
 run_root apt-get install -y nekohub-agent
 progress 82 'Agent package installed'
@@ -626,9 +694,13 @@ if command -v systemctl >/dev/null 2>&1; then
   run_root systemctl is-active --quiet nekohub-agent.service
 fi
 progress 96 'Agent service is running'
+test -S /run/nekohub/agent.sock
+if command -v curl >/dev/null 2>&1; then
+  curl -fsS http://127.0.0.1:9876/metrics >/dev/null
+fi
 echo 'nekoHub agent is ready.'"#;
 
-    let result = run_remote_command(&target, REMOTE_INSTALL, &event_tx).await;
+    let result = run_remote_command(&target, REMOTE_INSTALL, password.as_deref(), &event_tx).await;
     let event = match result {
         Ok(()) => CollectionEvent::RemoteInstallComplete { target },
         Err(message) => CollectionEvent::RemoteInstallError { message },
@@ -636,11 +708,16 @@ echo 'nekoHub agent is ready.'"#;
     let _ = event_tx.send(event).await;
 }
 
-async fn uninstall_remote_agent(target: String, event_tx: mpsc::Sender<CollectionEvent>) {
+async fn uninstall_remote_agent(
+    target: String,
+    password: Option<String>,
+    event_tx: mpsc::Sender<CollectionEvent>,
+) {
     const REMOTE_UNINSTALL: &str = r#"set -eu
 progress() { printf 'NEKOHUB_PROGRESS:%s:%s\n' "$1" "$2"; }
 run_root() {
   if [ "$(id -u)" -eq 0 ]; then "$@";
+  elif [ "${NEKOHUB_SUDO_STDIN:-0}" = 1 ]; then sudo -S -p '' "$@";
   elif command -v sudo >/dev/null 2>&1; then sudo -n "$@";
   else echo 'root access or sudo is required' >&2; return 1; fi
 }
@@ -656,7 +733,8 @@ progress 60 'Removing agent package'
 run_root apt-get remove -y nekohub-agent
 progress 95 'Agent removed'
 echo 'nekoHub agent was uninstalled.'"#;
-    let result = run_remote_command(&target, REMOTE_UNINSTALL, &event_tx).await;
+    let result =
+        run_remote_command(&target, REMOTE_UNINSTALL, password.as_deref(), &event_tx).await;
     let event = match result {
         Ok(()) => CollectionEvent::RemoteUninstallComplete { target },
         Err(message) => CollectionEvent::RemoteInstallError { message },
@@ -667,22 +745,57 @@ echo 'nekoHub agent was uninstalled.'"#;
 async fn run_remote_command(
     target: &str,
     command: &str,
+    password: Option<&str>,
     event_tx: &mpsc::Sender<CollectionEvent>,
 ) -> Result<(), String> {
-    let mut child = tokio::process::Command::new("ssh")
+    let mut process = if password.is_some() {
+        let mut process = tokio::process::Command::new("sshpass");
+        process.arg("-e").arg("ssh");
+        process
+    } else {
+        tokio::process::Command::new("ssh")
+    };
+    if let Some(password) = password {
+        process.env("SSHPASS", password);
+    }
+    let remote_command = if password.is_some() {
+        format!("NEKOHUB_SUDO_STDIN=1 sh -c {}", shell_single_quote(command))
+    } else {
+        command.to_owned()
+    };
+    let mut child = process
         .arg("-T")
         .arg("-o")
-        .arg("BatchMode=yes")
+        .arg(if password.is_some() {
+            "BatchMode=no"
+        } else {
+            "BatchMode=yes"
+        })
         .arg("-o")
         .arg("ConnectTimeout=12")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=accept-new")
         .arg(target)
-        .arg(command)
-        .stdin(Stdio::null())
+        .arg(remote_command)
+        .stdin(if password.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("Could not start SSH: {error}"))?;
+    if let Some(password) = password
+        && let Some(mut stdin) = child.stdin.take()
+    {
+        let passwords = format!("{}\n", password).repeat(12);
+        stdin
+            .write_all(passwords.as_bytes())
+            .await
+            .map_err(|error| format!("Could not provide the SSH password: {error}"))?;
+    }
     let stdout = child.stdout.take().ok_or("Could not read SSH output")?;
     let stderr = child.stderr.take().ok_or("Could not read SSH errors")?;
     let mut stdout = BufReader::new(stdout).lines();
@@ -710,11 +823,12 @@ async fn run_remote_command(
     if status.success() {
         Ok(())
     } else {
-        Err(
-            "SSH operation failed. Key/agent authentication and passwordless sudo are required."
-                .into(),
-        )
+        Err("SSH operation failed. Check the live output, credentials, and sudo access.".into())
     }
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 async fn send_remote_install_line(event_tx: &mpsc::Sender<CollectionEvent>, line: String) {

@@ -15,8 +15,11 @@ pub enum View {
     AgentSetup,
     Home,
     CreateGroup,
+    GroupDetail,
+    GroupAssign,
     RemotePicker,
     RemoteInstall,
+    RemoteConnect,
     RemoteUninstallConfirm,
     RemoteInstallProgress,
     Settings,
@@ -28,6 +31,7 @@ pub enum View {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeFocus {
     Navigation,
+    Machines,
     Groups,
 }
 
@@ -82,6 +86,7 @@ pub struct App {
     pub agent_confirm_selected: usize,
     pub home_focus: HomeFocus,
     pub home_nav_selected: usize,
+    pub home_machine_selected: usize,
     pub home_selected: usize,
     pub settings_selected: usize,
     pub settings_focus: SettingsFocus,
@@ -98,10 +103,14 @@ pub struct App {
     pub machine_groups: Vec<MachineGroup>,
     pub group_draft: String,
     pub group_error: Option<String>,
+    pub active_group: usize,
+    pub group_assign_selected: usize,
     pub home_notice: Option<String>,
     pub remote_hosts: Vec<HostTarget>,
     pub remote_selected: usize,
     pub remote_install_draft: String,
+    pub remote_password_draft: String,
+    pub remote_install_field: usize,
     pub remote_install_error: Option<String>,
     pub remote_install_progress: u16,
     pub remote_install_message: String,
@@ -130,6 +139,7 @@ impl App {
             agent_confirm_selected: 1,
             home_focus: HomeFocus::Groups,
             home_nav_selected: 0,
+            home_machine_selected: 0,
             home_selected: 0,
             settings_selected: 0,
             settings_focus: SettingsFocus::Sidebar,
@@ -146,10 +156,14 @@ impl App {
             machine_groups,
             group_draft: String::new(),
             group_error: None,
+            active_group: 0,
+            group_assign_selected: 0,
             home_notice: None,
             remote_hosts,
             remote_selected: 0,
             remote_install_draft: String::new(),
+            remote_password_draft: String::new(),
+            remote_install_field: 0,
             remote_install_error: None,
             remote_install_progress: 0,
             remote_install_message: String::new(),
@@ -184,6 +198,7 @@ impl App {
             agent_confirm_selected: 1,
             home_focus: HomeFocus::Groups,
             home_nav_selected: 0,
+            home_machine_selected: 0,
             home_selected: 0,
             settings_selected: 0,
             settings_focus: SettingsFocus::Sidebar,
@@ -200,10 +215,14 @@ impl App {
             machine_groups: Vec::new(),
             group_draft: String::new(),
             group_error: None,
+            active_group: 0,
+            group_assign_selected: 0,
             home_notice: None,
             remote_hosts: Vec::new(),
             remote_selected: 0,
             remote_install_draft: String::new(),
+            remote_password_draft: String::new(),
+            remote_install_field: 0,
             remote_install_error: None,
             remote_install_progress: 0,
             remote_install_message: String::new(),
@@ -313,6 +332,7 @@ impl App {
         self.selected = 0;
         self.home_focus = HomeFocus::Groups;
         self.home_nav_selected = 0;
+        self.home_machine_selected = 0;
         self.home_selected = 0;
         self.home_notice = None;
         self.start_navigation_motion(from, 0, 8);
@@ -333,15 +353,28 @@ impl App {
     }
 
     pub fn home_item_count(&self) -> usize {
-        self.machine_groups.len() + 2
+        self.machine_groups.len() + 1
     }
 
     pub fn toggle_home_focus(&mut self) {
         self.home_focus = match self.home_focus {
-            HomeFocus::Navigation => HomeFocus::Groups,
+            HomeFocus::Navigation => HomeFocus::Machines,
+            HomeFocus::Machines => HomeFocus::Groups,
             HomeFocus::Groups => HomeFocus::Navigation,
         };
         self.home_notice = None;
+    }
+
+    pub fn next_home_machine(&mut self) {
+        self.home_machine_selected =
+            (self.home_machine_selected + 1) % (self.remote_hosts.len() + 1);
+    }
+
+    pub fn previous_home_machine(&mut self) {
+        self.home_machine_selected = self
+            .home_machine_selected
+            .checked_sub(1)
+            .unwrap_or(self.remote_hosts.len());
     }
 
     pub fn next_home_nav(&mut self) {
@@ -394,7 +427,7 @@ impl App {
         }
         self.machine_groups
             .push(MachineGroup::empty(name.to_owned()));
-        self.home_selected = self.machine_groups.len();
+        self.home_selected = self.machine_groups.len().saturating_sub(1);
         self.group_draft.clear();
         self.group_error = None;
         self.home_notice = Some("Group created. Add machines from Machines.".into());
@@ -404,6 +437,62 @@ impl App {
 
     pub fn show_empty_group_notice(&mut self) {
         self.home_notice = Some("This group is empty. Add machines from Machines.".into());
+    }
+
+    pub fn open_group(&mut self) {
+        if self.home_selected < self.machine_groups.len() {
+            self.active_group = self.home_selected;
+            self.view = View::GroupDetail;
+        }
+    }
+
+    pub fn close_group(&mut self) {
+        self.view = View::Home;
+    }
+
+    pub fn begin_group_assignment(&mut self) {
+        if self.machine_groups.is_empty() {
+            self.remote_notice = Some("Create a group from Home first.".into());
+            return;
+        }
+        if self.remote_selected >= self.remote_hosts.len() + 1 {
+            self.remote_notice = Some("Select a machine first.".into());
+            return;
+        }
+        self.group_assign_selected = 0;
+        self.view = View::GroupAssign;
+    }
+
+    pub fn next_group_assignment(&mut self) {
+        self.group_assign_selected = (self.group_assign_selected + 1) % self.machine_groups.len();
+    }
+
+    pub fn previous_group_assignment(&mut self) {
+        self.group_assign_selected = self
+            .group_assign_selected
+            .checked_sub(1)
+            .unwrap_or(self.machine_groups.len() - 1);
+    }
+
+    pub fn apply_group_assignment(&mut self) {
+        let machine_id = if self.remote_selected == 0 {
+            "local".to_owned()
+        } else {
+            self.remote_hosts[self.remote_selected - 1].id.clone()
+        };
+        let group = &mut self.machine_groups[self.group_assign_selected];
+        if let Some(index) = group.host_ids.iter().position(|id| id == &machine_id) {
+            group.host_ids.remove(index);
+            self.remote_notice = Some(format!("Machine removed from {}.", group.name));
+        } else {
+            group.host_ids.push(machine_id);
+            self.remote_notice = Some(format!("Machine added to {}.", group.name));
+        }
+        self.view = View::RemotePicker;
+    }
+
+    pub fn cancel_group_assignment(&mut self) {
+        self.view = View::RemotePicker;
     }
 
     pub fn show_home_notice(&mut self, message: String) {
@@ -614,6 +703,8 @@ impl App {
     pub fn begin_remote_install(&mut self) {
         self.remote_uninstalling = false;
         self.remote_install_draft.clear();
+        self.remote_password_draft.clear();
+        self.remote_install_field = 0;
         self.remote_install_error = None;
         self.remote_notice = None;
         self.view = View::RemoteInstall;
@@ -642,19 +733,38 @@ impl App {
     }
 
     pub fn push_remote_install_character(&mut self, character: char) {
-        if self.remote_install_draft.chars().count() < 128 && !character.is_control() {
-            self.remote_install_draft.push(character);
+        let draft = if self.remote_install_field == 0 {
+            &mut self.remote_install_draft
+        } else {
+            &mut self.remote_password_draft
+        };
+        if draft.chars().count() < 128 && !character.is_control() {
+            draft.push(character);
             self.remote_install_error = None;
         }
     }
 
     pub fn pop_remote_install_character(&mut self) {
-        self.remote_install_draft.pop();
+        if self.remote_install_field == 0 {
+            self.remote_install_draft.pop();
+        } else {
+            self.remote_password_draft.pop();
+        }
         self.remote_install_error = None;
+    }
+
+    pub fn toggle_remote_install_field(&mut self) {
+        self.remote_install_field = 1 - self.remote_install_field;
+    }
+
+    pub fn take_remote_password(&mut self) -> Option<String> {
+        (!self.remote_password_draft.is_empty())
+            .then(|| std::mem::take(&mut self.remote_password_draft))
     }
 
     pub fn cancel_remote_install(&mut self) {
         self.remote_install_draft.clear();
+        self.remote_password_draft.clear();
         self.remote_install_error = None;
         self.view = View::RemotePicker;
     }
@@ -668,12 +778,15 @@ impl App {
             return;
         };
         self.remote_install_draft = target;
+        self.remote_password_draft.clear();
+        self.remote_install_field = 1;
         self.remote_install_error = None;
         self.remote_uninstalling = true;
         self.view = View::RemoteUninstallConfirm;
     }
 
     pub fn cancel_remote_uninstall(&mut self) {
+        self.remote_password_draft.clear();
         self.remote_uninstalling = false;
         self.view = View::RemotePicker;
     }
@@ -693,6 +806,26 @@ impl App {
             .checked_sub(1)
             .and_then(|index| self.remote_hosts.get(index))
             .filter(|machine| machine.tags.iter().any(|tag| tag == INSTALLED_TAG))
+    }
+
+    pub fn begin_remote_connect(&mut self) {
+        let Some(target) = self
+            .selected_installed_remote()
+            .map(|machine| machine.alias.clone())
+        else {
+            self.explain_remote_pairing();
+            return;
+        };
+        self.remote_install_draft = target;
+        self.remote_password_draft.clear();
+        self.remote_install_field = 1;
+        self.remote_install_error = None;
+        self.view = View::RemoteConnect;
+    }
+
+    pub fn cancel_remote_connect(&mut self) {
+        self.remote_password_draft.clear();
+        self.view = View::RemotePicker;
     }
 
     pub fn remote_install_target(&mut self) -> Result<String, String> {
@@ -764,10 +897,11 @@ impl App {
                 "Agent uninstalled. The SSH inventory entry remains available for reinstalling."
                     .into()
             } else {
-                "Agent installed and machine registered. Secure metric pairing comes next.".into()
+                "Agent installed and verified. Select the machine to open live metrics.".into()
             });
         }
         self.remote_install_draft.clear();
+        self.remote_password_draft.clear();
         self.remote_uninstalling = false;
         self.view = View::RemotePicker;
     }
@@ -779,7 +913,7 @@ impl App {
             .and_then(|index| self.remote_hosts.get(index))
             .is_some_and(|machine| machine.tags.iter().any(|tag| tag == INSTALLED_TAG));
         self.remote_notice = Some(if installed {
-            "The agent is installed and registered. Secure metric pairing is the next connection step; SSH is not used for monitoring.".into()
+            "The agent is installed. Press Enter to open its live metrics.".into()
         } else {
             "This SSH host does not have a registered nekoHub agent yet. Select “Install agent over SSH” below to prepare it.".into()
         });
@@ -809,9 +943,11 @@ impl App {
 
 fn shell_navigation_index(view: View) -> Option<usize> {
     match view {
-        View::Home | View::CreateGroup => Some(0),
+        View::Home | View::CreateGroup | View::GroupDetail => Some(0),
         View::RemotePicker
+        | View::GroupAssign
         | View::RemoteInstall
+        | View::RemoteConnect
         | View::RemoteUninstallConfirm
         | View::RemoteInstallProgress
         | View::Overview
@@ -884,7 +1020,7 @@ mod tests {
         app.open_home();
         assert_eq!(app.view, View::Home);
         app.previous_home_item();
-        assert_eq!(app.home_selected, 1);
+        assert_eq!(app.home_selected, 0);
         app.next_home_item();
         assert_eq!(app.home_selected, 0);
     }
@@ -899,7 +1035,21 @@ mod tests {
         app.create_group().unwrap();
         assert_eq!(app.machine_groups[0].name, "Production");
         assert_eq!(app.view, View::Home);
-        assert_eq!(app.home_selected, 1);
+        assert_eq!(app.home_selected, 0);
+    }
+
+    #[test]
+    fn assigns_and_removes_a_machine_from_a_group() {
+        let groups = vec![MachineGroup::empty("Production".into())];
+        let mut app = App::home(Vec::new(), groups);
+        app.remote_selected = 0;
+        app.begin_group_assignment();
+        app.apply_group_assignment();
+        assert_eq!(app.machine_groups[0].host_ids, ["local"]);
+
+        app.begin_group_assignment();
+        app.apply_group_assignment();
+        assert!(app.machine_groups[0].host_ids.is_empty());
     }
 
     #[test]

@@ -71,6 +71,16 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
             render_create_group(frame, frame.area(), app);
             return;
         }
+        View::GroupDetail => {
+            render_home(frame, frame.area(), app);
+            render_group_detail(frame, frame.area(), app);
+            return;
+        }
+        View::GroupAssign => {
+            render_remote_picker(frame, frame.area(), app);
+            render_group_assignment(frame, frame.area(), app);
+            return;
+        }
         View::RemotePicker => {
             render_remote_picker(frame, frame.area(), app);
             return;
@@ -78,6 +88,11 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
         View::RemoteInstall => {
             render_remote_picker(frame, frame.area(), app);
             render_remote_install(frame, frame.area(), app);
+            return;
+        }
+        View::RemoteConnect => {
+            render_remote_picker(frame, frame.area(), app);
+            render_remote_connect(frame, frame.area(), app);
             return;
         }
         View::RemoteUninstallConfirm => {
@@ -121,8 +136,11 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
         | View::AgentSetup
         | View::Home
         | View::CreateGroup
+        | View::GroupDetail
+        | View::GroupAssign
         | View::RemotePicker
         | View::RemoteInstall
+        | View::RemoteConnect
         | View::RemoteUninstallConfirm
         | View::RemoteInstallProgress
         | View::Settings
@@ -352,16 +370,22 @@ fn render_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Length(6),
+            Constraint::Length(3),
             Constraint::Min(8),
             Constraint::Length(1),
         ])
         .split(content);
-    let ready = 1;
+    let ready = app
+        .remote_hosts
+        .iter()
+        .filter(|machine| machine.tags.iter().any(|tag| tag == INSTALLED_TAG))
+        .count()
+        + 1;
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("GROUPS", Style::default().fg(AMBER).bold()),
+            Span::styled("RECENT MACHINES", Style::default().fg(CYAN).bold()),
             Span::styled(
-                format!("    {} spaces", app.machine_groups.len() + 1),
+                format!("    {} registered", app.remote_hosts.len() + 1),
                 Style::default().fg(DIM),
             ),
             Span::styled(format!("    ● {ready} ready"), Style::default().fg(GREEN)),
@@ -374,13 +398,29 @@ fn render_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
         animated_area(rows[0], app, 0, 3),
     );
     render_home_machine_shelf(frame, rows[1], app);
-    render_group_grid(frame, rows[2], app);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("GROUPS", Style::default().fg(AMBER).bold()),
+            Span::styled(
+                format!("    {} spaces", app.machine_groups.len()),
+                Style::default().fg(DIM),
+            ),
+            Span::styled("    organize your fleet", Style::default().fg(ORANGE)),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(LINE)),
+        ),
+        rows[2],
+    );
+    render_group_grid(frame, rows[3], app);
     if let Some(notice) = app.home_notice.as_deref() {
         frame.render_widget(
             Paragraph::new(notice)
                 .style(Style::default().fg(ORANGE))
                 .alignment(Alignment::Center),
-            rows[3],
+            rows[4],
         );
     }
 }
@@ -400,6 +440,7 @@ fn render_home_machine_shelf(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .constraints(vec![Constraint::Length(23); visible])
         .split(area);
     for (index, (name, local, installed)) in machines.into_iter().take(visible).enumerate() {
+        let selected = app.home_focus == HomeFocus::Machines && app.home_machine_selected == index;
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(clipped(name, 19), Style::default().fg(TEXT).bold()),
@@ -414,12 +455,19 @@ fn render_home_machine_shelf(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Style::default().fg(if installed { GREEN } else { DIM }),
                 ),
             ])
+            .style(card_background(app, selected))
             .block(
                 Block::default()
                     .title(if index == 0 { " MACHINES " } else { " " })
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(if installed { GREEN } else { LINE })),
+                    .border_style(Style::default().fg(if selected {
+                        AMBER
+                    } else if installed {
+                        GREEN
+                    } else {
+                        LINE
+                    })),
             ),
             cards[index],
         );
@@ -630,15 +678,8 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
         render_add_group_button(frame, area, app, selected);
         return;
     }
-    let (title, count, state, accent) = if index == 0 {
-        (
-            app.local_name.clone(),
-            "1 machine".to_owned(),
-            "● local · ready".to_owned(),
-            GREEN,
-        )
-    } else {
-        let group = &app.machine_groups[index - 1];
+    let (title, count, state, accent) = {
+        let group = &app.machine_groups[index];
         let count = group.host_ids.len();
         (
             group.name.clone(),
@@ -648,7 +689,7 @@ fn render_group_card(frame: &mut Frame<'_>, area: Rect, app: &App, index: usize)
             } else {
                 "● group ready".to_owned()
             },
-            [AMBER, CYAN, ORANGE][(index - 1) % 3],
+            [AMBER, CYAN, ORANGE][index % 3],
         )
     };
     let border = if selected { accent } else { LINE };
@@ -788,7 +829,7 @@ fn animated_area(area: Rect, app: &App, stage: u8, max_offset: u16) -> Rect {
 
 fn render_create_group(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let width = area.width.min(62);
-    let height = area.height.min(14);
+    let height = area.height.min(17);
     let modal = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -853,6 +894,124 @@ fn render_create_group(frame: &mut Frame<'_>, area: Rect, app: &App) {
             rows[2],
         );
     }
+}
+
+fn render_group_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(group) = app.machine_groups.get(app.active_group) else {
+        return;
+    };
+    let width = area.width.min(76);
+    let height = area.height.min(22);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    let mut lines = vec![
+        Line::styled(group.name.as_str(), Style::default().fg(AMBER).bold()),
+        Line::styled(
+            format!("{} machines", group.host_ids.len()),
+            Style::default().fg(DIM),
+        ),
+        Line::from(""),
+    ];
+    if group.host_ids.is_empty() {
+        lines.push(Line::styled(
+            "This group is empty. Select a machine in Machines and press g.",
+            Style::default().fg(Color::Gray),
+        ));
+    } else {
+        for id in &group.host_ids {
+            let name = if id == "local" {
+                app.local_name.as_str()
+            } else {
+                app.remote_hosts
+                    .iter()
+                    .find(|machine| &machine.id == id)
+                    .map_or(id.as_str(), |machine| machine.display_name.as_str())
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  ●  ", Style::default().fg(GREEN)),
+                Span::styled(name, Style::default().fg(TEXT).bold()),
+            ]));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(" GROUP ")
+                    .title_bottom(
+                        Line::from(" Esc close  ·  manage membership in Machines ").centered(),
+                    )
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Thick)
+                    .border_style(Style::default().fg(AMBER))
+                    .style(canvas_style(app)),
+            )
+            .wrap(Wrap { trim: true }),
+        modal,
+    );
+}
+
+fn render_group_assignment(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(66);
+    let height = (app.machine_groups.len() as u16 + 8)
+        .min(area.height)
+        .max(12);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    let machine_id = if app.remote_selected == 0 {
+        "local"
+    } else {
+        app.remote_hosts[app.remote_selected - 1].id.as_str()
+    };
+    let rows = app.machine_groups.iter().enumerate().map(|(index, group)| {
+        let member = group.host_ids.iter().any(|id| id == machine_id);
+        Line::from(vec![
+            Span::styled(
+                if index == app.group_assign_selected {
+                    " › "
+                } else {
+                    "   "
+                },
+                Style::default().fg(AMBER),
+            ),
+            Span::styled(
+                if member { "[x] " } else { "[ ] " },
+                Style::default().fg(if member { GREEN } else { DIM }),
+            ),
+            Span::styled(group.name.as_str(), Style::default().fg(TEXT).bold()),
+        ])
+    });
+    frame.render_widget(
+        Paragraph::new(
+            std::iter::once(Line::styled(
+                "Choose a group for this machine",
+                Style::default().fg(TEXT).bold(),
+            ))
+            .chain(std::iter::once(Line::from("")))
+            .chain(rows)
+            .collect::<Vec<_>>(),
+        )
+        .block(
+            Block::default()
+                .title(" GROUP MEMBERSHIP ")
+                .title_bottom(Line::from(" ↑↓ choose  ·  Enter toggle  ·  Esc cancel ").centered())
+                .borders(Borders::ALL)
+                .border_type(BorderType::Thick)
+                .border_style(Style::default().fg(AMBER))
+                .style(canvas_style(app)),
+        ),
+        modal,
+    );
 }
 
 fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -1483,7 +1642,7 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area,
         app,
         1,
-        "↑↓ select  ·  Enter open  ·  u uninstall selected agent  ·  Esc home  ·  q quit",
+        "↑↓ select  ·  Enter connect  ·  g group  ·  u uninstall  ·  Esc home  ·  q quit",
     );
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -1625,7 +1784,7 @@ fn render_remote_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                         .bold(),
                 ),
                 Span::styled(
-                    "    Removes it from the monitored fleet",
+                    "    Removes it from the monitored fleet  ·  [g] assign group",
                     Style::default().fg(DIM),
                 ),
             ]),
@@ -1668,6 +1827,23 @@ fn render_remote_uninstall_confirmation(frame: &mut Frame<'_>, area: Rect, app: 
             ),
             Line::from(""),
             Line::styled(
+                "SSH / sudo password (leave empty when your key works)",
+                Style::default().fg(DIM),
+            ),
+            Line::styled(
+                format!(
+                    "  {}{}",
+                    "•".repeat(app.remote_password_draft.chars().count()),
+                    if app.animation_tick % 10 < 5 {
+                        "_"
+                    } else {
+                        " "
+                    }
+                ),
+                Style::default().fg(TEXT),
+            ),
+            Line::from(""),
+            Line::styled(
                 "Press Enter to uninstall, or Esc to cancel.",
                 Style::default().fg(RED),
             ),
@@ -1689,7 +1865,7 @@ fn render_remote_uninstall_confirmation(frame: &mut Frame<'_>, area: Rect, app: 
 
 fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let width = area.width.min(76);
-    let height = area.height.min(18);
+    let height = area.height.min(22);
     let modal = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -1702,7 +1878,9 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Span::styled(" /\\ ", Style::default().fg(AMBER).bold()),
             Span::styled(" INSTALL REMOTE AGENT ", Style::default().fg(TEXT).bold()),
         ]))
-        .title_bottom(Line::from(" Enter connect & install  ·  Esc cancel ").centered())
+        .title_bottom(
+            Line::from(" Tab field  ·  Enter connect & install  ·  Esc cancel ").centered(),
+        )
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
         .border_style(Style::default().fg(AMBER))
@@ -1713,6 +1891,7 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(5),
+            Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(4),
             Constraint::Min(2),
@@ -1730,7 +1909,7 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Style::default().fg(Color::Gray),
             ),
             Line::styled(
-                "Use an SSH key or agent. Remote root or passwordless sudo is required.",
+                "Use a key, or enter the SSH password below. The password is never saved.",
                 Style::default().fg(DIM),
             ),
         ])
@@ -1744,7 +1923,16 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
         " "
     };
     frame.render_widget(
-        Paragraph::new(format!(" {}{cursor}", app.remote_install_draft)).block(
+        Paragraph::new(format!(
+            " {}{}",
+            app.remote_install_draft,
+            if app.remote_install_field == 0 {
+                cursor
+            } else {
+                " "
+            }
+        ))
+        .block(
             Block::default()
                 .title(" SSH destination · user@machine ")
                 .borders(Borders::ALL)
@@ -1752,6 +1940,29 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .border_style(Style::default().fg(AMBER)),
         ),
         rows[1],
+    );
+    let masked = "•".repeat(app.remote_password_draft.chars().count());
+    frame.render_widget(
+        Paragraph::new(format!(
+            " {masked}{}",
+            if app.remote_install_field == 1 {
+                cursor
+            } else {
+                " "
+            }
+        ))
+        .block(
+            Block::default()
+                .title(" SSH / sudo password · optional when a key works ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(if app.remote_install_field == 1 {
+                    AMBER
+                } else {
+                    LINE
+                })),
+        ),
+        rows[2],
     );
     frame.render_widget(
         Paragraph::new(vec![
@@ -1762,16 +1973,69 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ),
         ])
         .wrap(Wrap { trim: true }),
-        rows[2],
+        rows[3],
     );
     if let Some(error) = app.remote_install_error.as_deref() {
         frame.render_widget(
             Paragraph::new(error)
                 .style(Style::default().fg(RED))
                 .alignment(Alignment::Center),
-            rows[3],
+            rows[4],
         );
     }
+}
+
+fn render_remote_connect(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(72);
+    let height = area.height.min(17);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    let masked = "•".repeat(app.remote_password_draft.chars().count());
+    let cursor = if app.animation_tick % 10 < 5 {
+        "_"
+    } else {
+        " "
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("OPEN LIVE METRICS", Style::default().fg(CYAN).bold()),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Machine  ", Style::default().fg(DIM)),
+                Span::styled(
+                    app.remote_install_draft.as_str(),
+                    Style::default().fg(TEXT).bold(),
+                ),
+            ]),
+            Line::from(""),
+            Line::styled(
+                "Metrics come from nekohub-agent through an encrypted SSH tunnel.",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::from(""),
+            Line::styled(
+                "SSH password (leave empty when your key works)",
+                Style::default().fg(DIM),
+            ),
+            Line::styled(format!("  {masked}{cursor}"), Style::default().fg(TEXT)),
+        ])
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .title(" CONNECT AGENT ")
+                .title_bottom(Line::from(" Enter connect  ·  Esc cancel ").centered())
+                .borders(Borders::ALL)
+                .border_type(BorderType::Thick)
+                .border_style(Style::default().fg(CYAN))
+                .style(canvas_style(app)),
+        ),
+        modal,
+    );
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3168,6 +3432,10 @@ mod tests {
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.open_home();
             terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.home_selected = 0;
+            app.open_group();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.close_group();
             app.begin_group_creation();
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.cancel_group_creation();
@@ -3183,6 +3451,10 @@ mod tests {
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.cancel_theme_import();
             app.open_remote_picker();
+            app.remote_selected = 0;
+            app.begin_group_assignment();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.cancel_group_assignment();
             app.remote_selected = app.remote_item_count() - 1;
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.begin_remote_install();
@@ -3194,7 +3466,15 @@ mod tests {
             app.complete_remote_install("ops@server");
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.close_remote_install_progress();
-            app.remote_selected = 1;
+            app.remote_selected = app
+                .remote_hosts
+                .iter()
+                .position(|host| host.alias == "ops@server")
+                .unwrap()
+                + 1;
+            app.begin_remote_connect();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.cancel_remote_connect();
             app.begin_remote_uninstall();
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.cancel_remote_uninstall();

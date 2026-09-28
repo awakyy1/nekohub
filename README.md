@@ -26,7 +26,10 @@ This repository is the architectural seed and first executable vertical slice:
 - collects the current Linux machine through `nekohub-agent` without SSH;
 - presents concrete aliases from `~/.ssh/config` in the remote picker.
 - installs or removes `nekohub-agent` on remote Debian and Ubuntu amd64
-  machines with live progress inside the app;
+  machines with key or password authentication and live progress inside the app;
+- opens remote live metrics through an encrypted SSH tunnel to the native agent
+  protocol; the agent performs collection and SSH never runs metric commands;
+- separates recent machines from groups, with persistent group membership;
 - applies four complete palettes, imports community theme JSON files, and
   persists three interface-lettering profiles.
 
@@ -50,12 +53,13 @@ from the card grid and are stored in `~/.config/nekohub/machine-groups.json`.
 If the service is unavailable, setup pauses with recovery commands and does not
 mark onboarding as complete.
 
-The Home screen shows the local machine and every discovered or registered
-remote machine. The Machines screen can install or uninstall the agent using
-an SSH destination such as `ops@edge-01`, while showing progress and command
-output without closing nekoHub. In-app setup currently requires SSH key/agent
-authentication and remote root or passwordless `sudo`. Secure metric pairing
-is the next milestone; SSH metric collection remains disabled.
+The Home screen separates recent machines from groups. In Machines, press `g`
+to add or remove the selected machine from a group. The Machines screen can
+install or uninstall the agent using an SSH destination such as `ops@edge-01`,
+while showing progress and command output without closing nekoHub. SSH key and
+password authentication are supported; passwords remain in memory only for the
+operation. Selecting an installed remote machine opens its native agent metrics
+through an encrypted SSH tunnel.
 
 Settings includes four complete palettes and an **Import / upload theme**
 action. Community themes use the JSON format in
@@ -85,7 +89,7 @@ it with `systemctl status nekohub-agent`.
 Alternatively, install downloaded builds directly:
 
 ```bash
-sudo apt install ./nekohub-agent_0.8.0_amd64.deb ./nekohub_0.8.0_amd64.deb
+sudo apt install ./nekohub-agent_0.9.0_amd64.deb ./nekohub_0.9.0_amd64.deb
 nekohub
 ```
 
