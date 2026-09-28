@@ -562,7 +562,7 @@ impl App {
                 machine.display_name.clone_from(&machine.alias);
                 machine.tags.retain(|tag| tag != CUSTOM_ALIAS_TAG);
             } else {
-                machine.display_name = alias.to_owned();
+                alias.clone_into(&mut machine.display_name);
                 if !machine.tags.iter().any(|tag| tag == CUSTOM_ALIAS_TAG) {
                     machine.tags.push(CUSTOM_ALIAS_TAG.into());
                 }

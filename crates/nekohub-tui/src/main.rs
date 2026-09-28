@@ -157,7 +157,7 @@ fn local_target() -> HostTarget {
 
 fn local_target_named(display_name: &str) -> HostTarget {
     let mut target = local_target();
-    target.display_name = display_name.to_owned();
+    display_name.clone_into(&mut target.display_name);
     target
 }
 

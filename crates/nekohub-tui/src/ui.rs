@@ -47,6 +47,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     );
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_content(frame: &mut Frame<'_>, app: &App) {
     match app.view {
         View::Welcome => {
