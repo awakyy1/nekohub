@@ -473,16 +473,6 @@ impl App {
         });
     }
 
-    pub fn next_theme(&mut self) {
-        self.theme = self.theme.next();
-        self.settings_notice = Some(format!("{} theme applied.", self.theme.label()));
-    }
-
-    pub fn previous_theme(&mut self) {
-        self.theme = self.theme.previous();
-        self.settings_notice = Some(format!("{} theme applied.", self.theme.label()));
-    }
-
     pub fn apply_builtin_theme(&mut self, theme: Theme) {
         self.theme = theme;
         self.settings_notice = Some(format!("{} theme applied.", theme.label()));
@@ -524,14 +514,6 @@ impl App {
 
     pub fn next_font_profile(&mut self) {
         self.font_profile = self.font_profile.next();
-        self.settings_notice = Some(format!(
-            "{} interface lettering applied.",
-            self.font_profile.label()
-        ));
-    }
-
-    pub fn previous_font_profile(&mut self) {
-        self.font_profile = self.font_profile.previous();
         self.settings_notice = Some(format!(
             "{} interface lettering applied.",
             self.font_profile.label()
@@ -1000,7 +982,7 @@ mod tests {
     #[test]
     fn theme_and_lettering_choices_cycle() {
         let mut app = App::home(Vec::new(), Vec::new());
-        app.next_theme();
+        app.apply_builtin_theme(Theme::Blue);
         app.next_font_profile();
         assert_eq!(app.theme, Theme::Blue);
         assert_eq!(app.font_profile, FontProfile::Compact);

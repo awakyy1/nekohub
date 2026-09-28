@@ -487,7 +487,7 @@ async fn run_event_loop(
                             {
                                 app.enter_settings_content();
                             }
-                            KeyCode::Left | KeyCode::Char('h')
+                            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc
                                 if app.settings_focus == SettingsFocus::Content =>
                             {
                                 app.leave_settings_content();
@@ -524,9 +524,6 @@ async fn run_event_loop(
                                     && app.settings_item_selected == 4 =>
                             {
                                 app.begin_theme_import();
-                            }
-                            KeyCode::Esc if app.settings_focus == SettingsFocus::Content => {
-                                app.leave_settings_content();
                             }
                             KeyCode::Esc => app.open_home(),
                             _ => {}

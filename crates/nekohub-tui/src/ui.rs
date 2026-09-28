@@ -949,6 +949,7 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_appearance_settings(frame: &mut Frame<'_>, area: Rect, app: &App, color: Color) {
     let block = Block::default()
         .title(" APPEARANCE ")
@@ -1060,6 +1061,7 @@ fn render_appearance_settings(frame: &mut Frame<'_>, area: Rect, app: &App, colo
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_theme_settings(frame: &mut Frame<'_>, area: Rect, app: &App, color: Color) {
     let block = Block::default()
         .title(" THEMES ")
@@ -1772,6 +1774,7 @@ fn render_remote_install(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_remote_install_progress(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let width = area.width.min(86);
     let height = area.height.min(24);

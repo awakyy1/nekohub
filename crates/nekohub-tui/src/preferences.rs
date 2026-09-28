@@ -25,26 +25,6 @@ impl Theme {
             Self::Custom => "Custom",
         }
     }
-
-    pub const fn next(self) -> Self {
-        match self {
-            Self::Pink => Self::Blue,
-            Self::Blue => Self::Red,
-            Self::Red => Self::Purple,
-            Self::Purple => Self::Pink,
-            Self::Custom => Self::Pink,
-        }
-    }
-
-    pub const fn previous(self) -> Self {
-        match self {
-            Self::Pink => Self::Purple,
-            Self::Blue => Self::Pink,
-            Self::Red => Self::Blue,
-            Self::Purple => Self::Red,
-            Self::Custom => Self::Purple,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,14 +95,6 @@ impl FontProfile {
             Self::Rounded => Self::Compact,
             Self::Compact => Self::Ascii,
             Self::Ascii => Self::Rounded,
-        }
-    }
-
-    pub const fn previous(self) -> Self {
-        match self {
-            Self::Rounded => Self::Ascii,
-            Self::Compact => Self::Rounded,
-            Self::Ascii => Self::Compact,
         }
     }
 }
