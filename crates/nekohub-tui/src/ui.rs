@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
         Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Sparkline, Table, Widget,
@@ -22,6 +22,7 @@ use crate::{
     app::{App, HomeFocus, HostState, SettingsFocus, View},
     machines::INSTALLED_TAG,
     preferences::{CustomTheme, FontProfile, Theme},
+    ssh_terminal::TerminalPhase,
 };
 
 const AMBER: Color = Color::Rgb(126, 213, 177);
@@ -120,22 +121,25 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
             render_theme_import(frame, frame.area(), app);
             return;
         }
-        View::Overview | View::Detail => {}
+        View::Overview | View::Detail | View::TerminalPassword | View::Terminal => {}
     }
-    let content = render_app_chrome(
-        frame,
-        frame.area(),
-        app,
-        1,
-        "↑↓ sections  ·  Enter open  ·  n/p machine  ·  r refresh  ·  Esc home  ·  q quit",
-    );
+    let footer = if app.view == View::Terminal {
+        "Ctrl+] close terminal  ·  remote input is sent directly over SSH"
+    } else if app.view == View::TerminalPassword {
+        "Type password  ·  Enter connect  ·  Esc cancel"
+    } else {
+        "↑↓ sections  ·  Enter open  ·  n/p machine  ·  r refresh  ·  Esc home  ·  q quit"
+    };
+    let content = render_app_chrome(frame, frame.area(), app, 1, footer);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(10)])
         .split(content);
     render_monitoring_bar(frame, sections[0], app);
     match app.view {
-        View::Overview => render_overview(frame, sections[1], app),
+        View::Overview | View::TerminalPassword | View::Terminal => {
+            render_overview(frame, sections[1], app);
+        }
         View::Detail => render_detail(frame, sections[1], app.selected()),
         View::Welcome
         | View::AgentConfirm
@@ -2429,6 +2433,10 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let Some(host) = app.selected() else {
         return;
     };
+    if app.monitor_selected == 7 {
+        render_terminal_panel(frame, animated_area(columns[2], app, 2, 4), app, host);
+        return;
+    }
     if app.monitor_selected != 0 {
         render_monitor_placeholder(frame, animated_area(columns[2], app, 2, 4), app, host);
         return;
@@ -2561,6 +2569,7 @@ fn render_monitor_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ("Services", Color::Rgb(164, 143, 214)),
         ("Containers", CYAN),
         ("Logs", Color::Gray),
+        ("Terminal", AMBER),
     ];
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -2835,6 +2844,11 @@ fn render_monitor_placeholder(frame: &mut Frame<'_>, area: Rect, app: &App, host
         ),
         ("Containers", "Docker and Podman workloads", CYAN),
         ("Logs", "Search and follow machine logs", Color::Gray),
+        (
+            "Terminal",
+            "Open an interactive SSH shell inside nekoHub",
+            AMBER,
+        ),
     ];
     let (title, detail, color) = sections[app.monitor_selected.min(sections.len() - 1)];
     let hostname = host
@@ -2867,6 +2881,227 @@ fn render_monitor_placeholder(frame: &mut Frame<'_>, area: Rect, app: &App, host
         ),
         area,
     );
+}
+
+fn render_terminal_panel(frame: &mut Frame<'_>, area: Rect, app: &App, host: &HostState) {
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" TERMINAL  ", Style::default().fg(AMBER).bold()),
+            Span::styled(host.target.display_name.as_str(), Style::default().fg(DIM)),
+            Span::styled(" ", Style::default()),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(AMBER));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    match &app.terminal.phase {
+        TerminalPhase::Idle => {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(""),
+                    Line::styled("Interactive SSH terminal", Style::default().fg(TEXT).bold()),
+                    Line::from(""),
+                    Line::styled(
+                        format!("Connect securely to {}", host.target.alias),
+                        Style::default().fg(Color::Gray),
+                    ),
+                    Line::styled(
+                        "The password stays in memory only while the connection starts.",
+                        Style::default().fg(DIM),
+                    ),
+                    Line::from(""),
+                    Line::styled("Press Enter to continue", Style::default().fg(AMBER).bold()),
+                ])
+                .alignment(Alignment::Center),
+                vertically_centered(inner, 7),
+            );
+        }
+        TerminalPhase::Password => render_terminal_password(frame, inner, app),
+        TerminalPhase::Booting => render_terminal_boot(frame, inner, app),
+        TerminalPhase::Connected => render_terminal_screen(frame, inner, app),
+        TerminalPhase::Closed(status) => {
+            render_terminal_screen(frame, inner, app);
+            render_terminal_status(frame, inner, status, GREEN);
+        }
+        TerminalPhase::Error(message) => {
+            render_terminal_screen(frame, inner, app);
+            render_terminal_status(frame, inner, message, RED);
+        }
+    }
+}
+
+fn render_terminal_password(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.saturating_sub(4).clamp(20, 66).min(area.width);
+    let height = 9_u16.min(area.height);
+    let prompt = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, prompt);
+    let prompt_block = Block::default()
+        .title(" SSH AUTHENTICATION ")
+        .title_bottom(Line::from(" Enter connect  ·  Esc cancel ").centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(AMBER));
+    let prompt_inner = prompt_block.inner(prompt);
+    frame.render_widget(prompt_block, prompt);
+    let masked = if app.terminal.password.is_empty() {
+        " ".to_owned()
+    } else {
+        "•".repeat(app.terminal.password.chars().count())
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                format!("Connect to {}", app.terminal.target),
+                Style::default().fg(TEXT).bold(),
+            ),
+            Line::styled(
+                "Leave empty when your SSH key already works.",
+                Style::default().fg(DIM),
+            ),
+            Line::from(""),
+            Line::styled("SSH password", Style::default().fg(Color::Gray)),
+            Line::styled(masked, Style::default().fg(AMBER).bold()),
+        ]),
+        prompt_inner,
+    );
+}
+
+fn render_terminal_boot(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    const STEPS: [&str; 4] = [
+        "initializing secure console",
+        "opening pseudo-terminal",
+        "negotiating SSH session",
+        "attaching remote shell",
+    ];
+    let step = app.terminal.boot_step(app.animation_tick);
+    let mut lines = vec![
+        Line::styled(
+            " /\\        __        __ __     __ /\\",
+            Style::default().fg(AMBER).bold(),
+        ),
+        Line::styled(
+            "  ___  ___ / /_____  / // /_ __/ /",
+            Style::default().fg(TEXT).bold(),
+        ),
+        Line::styled(
+            " / _ \\/ -_)  '_/ _ \\/ _  / // / _ \\",
+            Style::default().fg(Color::Gray),
+        ),
+        Line::styled(
+            "/_//_/\\__/_/\\_\\\\___/_//_/\\_,_/_.__/",
+            Style::default().fg(AMBER),
+        ),
+        Line::from(""),
+    ];
+    for (index, label) in STEPS.into_iter().enumerate() {
+        let (marker, color) = match index.cmp(&step) {
+            std::cmp::Ordering::Less => ("●", GREEN),
+            std::cmp::Ordering::Equal => ("◆", AMBER),
+            std::cmp::Ordering::Greater => ("·", DIM),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{marker} "), Style::default().fg(color).bold()),
+            Span::styled(label, Style::default().fg(color)),
+        ]));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).alignment(Alignment::Center),
+        vertically_centered(area, 9),
+    );
+}
+
+fn render_terminal_screen(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let screen = app.terminal.screen();
+    let (rows, cols) = screen.size();
+    let visible_rows = rows.min(area.height);
+    let visible_cols = cols.min(area.width);
+    for row in 0..visible_rows {
+        for col in 0..visible_cols {
+            let Some(source) = screen.cell(row, col) else {
+                continue;
+            };
+            if source.is_wide_continuation() {
+                continue;
+            }
+            let foreground = terminal_color(source.fgcolor(), TEXT);
+            let background = terminal_color(source.bgcolor(), SURFACE);
+            let mut style = Style::default().fg(foreground).bg(background);
+            if source.bold() {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if source.dim() {
+                style = style.add_modifier(Modifier::DIM);
+            }
+            if source.italic() {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            if source.underline() {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            if source.inverse() {
+                style = Style::default().fg(background).bg(foreground);
+            }
+            let symbol = if source.has_contents() {
+                source.contents()
+            } else {
+                " "
+            };
+            if let Some(cell) = frame.buffer_mut().cell_mut((area.x + col, area.y + row)) {
+                cell.set_symbol(symbol).set_style(style);
+            }
+        }
+    }
+    if !screen.hide_cursor() {
+        let (row, col) = screen.cursor_position();
+        if row < area.height && col < area.width {
+            frame.set_cursor_position((area.x + col, area.y + row));
+        }
+    }
+}
+
+fn render_terminal_status(frame: &mut Frame<'_>, area: Rect, message: &str, color: Color) {
+    let status = Rect::new(
+        area.x,
+        area.bottom().saturating_sub(2),
+        area.width,
+        2.min(area.height),
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(format!(" {message} "), Style::default().fg(color).bold()),
+            Line::styled(
+                " Ctrl+] return to machine metrics ",
+                Style::default().fg(DIM),
+            ),
+        ])
+        .style(Style::default().bg(SURFACE)),
+        status,
+    );
+}
+
+fn vertically_centered(area: Rect, height: u16) -> Rect {
+    let height = height.min(area.height);
+    Rect::new(
+        area.x,
+        area.y + area.height.saturating_sub(height) / 2,
+        area.width,
+        height,
+    )
+}
+
+fn terminal_color(color: vt100::Color, default: Color) -> Color {
+    match color {
+        vt100::Color::Default => default,
+        vt100::Color::Idx(index) => Color::Indexed(index),
+        vt100::Color::Rgb(red, green, blue) => Color::Rgb(red, green, blue),
+    }
 }
 
 fn clipped(text: &str, max_chars: usize) -> String {
@@ -3679,6 +3914,23 @@ mod tests {
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.cancel_remote_uninstall();
             app.start_monitoring(nekohub_core::HostTarget::from_alias("local"));
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.monitor_selected = 7;
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.begin_terminal_password();
+            app.push_terminal_password_character('x');
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let request = app.start_terminal(
+                height.saturating_sub(16).max(2),
+                width.saturating_sub(35).max(10),
+            );
+            app.terminal
+                .process_output(request.generation, b"\x1b[32mconnected\x1b[0m\r\nserver$ ");
+            for _ in 0..42 {
+                app.advance_animation();
+            }
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.terminal.finish(request.generation, "Success".into());
             terminal.draw(|frame| render(frame, &app)).unwrap();
         }
     }

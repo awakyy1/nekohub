@@ -6,6 +6,7 @@ use crate::{
     groups::MachineGroup,
     machines::{CUSTOM_ALIAS_TAG, INSTALLED_TAG},
     preferences::{CustomTheme, FontProfile, Theme},
+    ssh_terminal::{TerminalPanel, TerminalRequest},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,8 @@ pub enum View {
     ThemeImport,
     Overview,
     Detail,
+    TerminalPassword,
+    Terminal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +97,7 @@ pub struct App {
     pub settings_focus: SettingsFocus,
     pub settings_item_selected: usize,
     pub monitor_selected: usize,
+    pub terminal: TerminalPanel,
     pub navigation_motion: Option<NavigationMotion>,
     pub background_enabled: bool,
     pub theme: Theme,
@@ -151,6 +155,7 @@ impl App {
             settings_focus: SettingsFocus::Sidebar,
             settings_item_selected: 0,
             monitor_selected: 0,
+            terminal: TerminalPanel::default(),
             navigation_motion: None,
             background_enabled: true,
             theme: Theme::default(),
@@ -214,6 +219,7 @@ impl App {
             settings_focus: SettingsFocus::Sidebar,
             settings_item_selected: 0,
             monitor_selected: 0,
+            terminal: TerminalPanel::default(),
             navigation_motion: None,
             background_enabled: true,
             theme: Theme::default(),
@@ -740,6 +746,7 @@ impl App {
 
     pub fn advance_animation(&mut self) {
         self.animation_tick = self.animation_tick.wrapping_add(1);
+        self.terminal.advance_boot(self.animation_tick);
         let motion_finished = if let Some(motion) = &mut self.navigation_motion {
             motion.frame = motion.frame.saturating_add(1);
             motion.frame >= motion.total_frames
@@ -1030,11 +1037,37 @@ impl App {
     }
 
     pub fn next_monitor_section(&mut self) {
-        self.monitor_selected = (self.monitor_selected + 1) % 7;
+        self.monitor_selected = (self.monitor_selected + 1) % 8;
     }
 
     pub fn previous_monitor_section(&mut self) {
-        self.monitor_selected = self.monitor_selected.checked_sub(1).unwrap_or(6);
+        self.monitor_selected = self.monitor_selected.checked_sub(1).unwrap_or(7);
+    }
+
+    pub fn begin_terminal_password(&mut self) {
+        let Some(target) = self.selected().map(|host| host.target.alias.clone()) else {
+            return;
+        };
+        self.terminal.begin_password(&target);
+        self.view = View::TerminalPassword;
+    }
+
+    pub fn push_terminal_password_character(&mut self, character: char) {
+        self.terminal.push_password_character(character);
+    }
+
+    pub fn pop_terminal_password_character(&mut self) {
+        self.terminal.pop_password_character();
+    }
+
+    pub fn start_terminal(&mut self, rows: u16, cols: u16) -> TerminalRequest {
+        self.view = View::Terminal;
+        self.terminal.start(rows, cols, self.animation_tick)
+    }
+
+    pub fn close_terminal(&mut self) {
+        self.terminal.cancel();
+        self.view = View::Overview;
     }
 
     fn start_navigation_motion(&mut self, from: usize, to: usize, total_frames: u8) {
@@ -1058,7 +1091,9 @@ fn shell_navigation_index(view: View) -> Option<usize> {
         | View::RemoteUninstallConfirm
         | View::RemoteInstallProgress
         | View::Overview
-        | View::Detail => Some(1),
+        | View::Detail
+        | View::TerminalPassword
+        | View::Terminal => Some(1),
         View::Settings | View::ThemeImport => Some(2),
         View::Welcome | View::AgentConfirm | View::AgentSetup => None,
     }
@@ -1237,7 +1272,7 @@ mod tests {
     fn machine_sections_wrap() {
         let mut app = App::monitoring(vec![HostTarget::from_alias("local")]);
         app.previous_monitor_section();
-        assert_eq!(app.monitor_selected, 6);
+        assert_eq!(app.monitor_selected, 7);
         app.next_monitor_section();
         assert_eq!(app.monitor_selected, 0);
     }

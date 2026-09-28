@@ -4,6 +4,7 @@ mod groups;
 mod machines;
 mod onboarding;
 mod preferences;
+mod ssh_terminal;
 mod terminal;
 mod ui;
 
@@ -15,6 +16,7 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use nekohub_agent::{AgentCollector, SshAgentCollector};
 use nekohub_core::{Collector, HostSnapshot, HostTarget, Inventory, RateTracker};
+use ssh_terminal::{SshTerminalSession, TerminalEvent, embedded_size, encode_key};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::{broadcast, mpsc, watch},
@@ -262,9 +264,11 @@ async fn run_event_loop(
     onboarding_state_path: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (event_tx, mut event_rx) = mpsc::channel(32);
+    let (terminal_event_tx, mut terminal_event_rx) = mpsc::unbounded_channel();
     let (refresh_tx, _) = broadcast::channel(1);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut workers = tokio::task::JoinSet::new();
+    let mut ssh_session: Option<SshTerminalSession> = None;
 
     if let Some((targets, collector)) = initial {
         for target in targets {
@@ -289,6 +293,18 @@ async fn run_event_loop(
         tokio::select! {
             _ = redraw.tick() => {
                 app.advance_animation();
+                if app.view == View::Terminal {
+                    let (outer_cols, outer_rows) = crossterm::terminal::size()?;
+                    let (rows, cols) = embedded_size(outer_cols, outer_rows);
+                    if app.terminal.screen().size() != (rows, cols) {
+                        app.terminal.resize(rows, cols);
+                        if let Some(session) = ssh_session.as_ref() {
+                            if let Err(message) = session.resize(rows, cols) {
+                                app.terminal.fail(app.terminal.generation(), message);
+                            }
+                        }
+                    }
+                }
                 if let Err(error) = terminal.terminal_mut().draw(|frame| ui::render(frame, app)) {
                     break Err(error.into());
                 }
@@ -332,10 +348,44 @@ async fn run_event_loop(
                 }
                 CollectionEvent::RemoteInstallError { message } => app.fail_remote_install(message),
             },
+            Some(event) = terminal_event_rx.recv() => match event {
+                TerminalEvent::Output { generation, bytes } => {
+                    app.terminal.process_output(generation, &bytes);
+                }
+                TerminalEvent::Exit { generation, status } => {
+                    if generation == app.terminal.generation() {
+                        app.terminal.finish(generation, status);
+                        ssh_session = None;
+                    }
+                }
+                TerminalEvent::Error { generation, message } => {
+                    if generation == app.terminal.generation() {
+                        app.terminal.fail(generation, message);
+                        ssh_session = None;
+                    }
+                }
+            },
             Some(input) = events.next() => match input? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if app.view == View::Terminal {
+                        if matches!(key.code, KeyCode::Char(']'))
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            ssh_session = None;
+                            app.close_terminal();
+                        } else if let Some(session) = ssh_session.as_mut() {
+                            let bytes = encode_key(key);
+                            if !bytes.is_empty() {
+                                if let Err(message) = session.send(&bytes) {
+                                    app.terminal.fail(app.terminal.generation(), message);
+                                    ssh_session = None;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     if matches!(key.code, KeyCode::Char('q'))
-                        && !matches!(app.view, View::CreateGroup | View::GroupAssign | View::MachineAlias | View::RemoteInstall | View::RemoteConnect | View::RemoteUninstallConfirm | View::ThemeImport)
+                        && !matches!(app.view, View::CreateGroup | View::GroupAssign | View::MachineAlias | View::RemoteInstall | View::RemoteConnect | View::RemoteUninstallConfirm | View::ThemeImport | View::TerminalPassword)
                         || matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break Ok(());
@@ -681,6 +731,9 @@ async fn run_event_loop(
                             KeyCode::Char('n') => app.next(),
                             KeyCode::Char('p') => app.previous(),
                             KeyCode::Enter if app.monitor_selected == 0 => app.open_detail(),
+                            KeyCode::Enter if app.monitor_selected == 7 => {
+                                app.begin_terminal_password();
+                            }
                             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.open_home(),
                             KeyCode::Char('r') => { let _ = refresh_tx.send(()); },
                             _ => {}
@@ -692,6 +745,57 @@ async fn run_event_loop(
                             KeyCode::Char('r') => { let _ = refresh_tx.send(()); },
                             _ => {}
                         },
+                        View::TerminalPassword => match key.code {
+                            KeyCode::Esc => app.close_terminal(),
+                            KeyCode::Backspace => app.pop_terminal_password_character(),
+                            KeyCode::Enter => {
+                                let (outer_cols, outer_rows) = crossterm::terminal::size()?;
+                                let (rows, cols) = embedded_size(outer_cols, outer_rows);
+                                let request = app.start_terminal(rows, cols);
+                                match SshTerminalSession::spawn(
+                                    request,
+                                    rows,
+                                    cols,
+                                    terminal_event_tx.clone(),
+                                ) {
+                                    Ok(session) => ssh_session = Some(session),
+                                    Err(message) => {
+                                        let generation = app.terminal.generation();
+                                        app.terminal.fail(generation, message);
+                                    }
+                                }
+                            }
+                            KeyCode::Char(character)
+                                if !key.modifiers.intersects(
+                                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                                ) => {
+                                app.push_terminal_password_character(character);
+                            }
+                            _ => {}
+                        },
+                        View::Terminal => unreachable!("terminal input is handled before navigation"),
+                    }
+                }
+                Event::Paste(text) if app.view == View::Terminal => {
+                    if let Some(session) = ssh_session.as_mut() {
+                        let bytes = if app.terminal.screen().bracketed_paste() {
+                            format!("\x1b[200~{text}\x1b[201~").into_bytes()
+                        } else {
+                            text.into_bytes()
+                        };
+                        if let Err(message) = session.send(&bytes) {
+                            app.terminal.fail(app.terminal.generation(), message);
+                            ssh_session = None;
+                        }
+                    }
+                }
+                Event::Resize(outer_cols, outer_rows) if app.view == View::Terminal => {
+                    let (rows, cols) = embedded_size(outer_cols, outer_rows);
+                    app.terminal.resize(rows, cols);
+                    if let Some(session) = ssh_session.as_ref() {
+                        if let Err(message) = session.resize(rows, cols) {
+                            app.terminal.fail(app.terminal.generation(), message);
+                        }
                     }
                 }
                 _ => {}
