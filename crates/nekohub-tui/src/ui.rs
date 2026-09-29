@@ -2847,7 +2847,7 @@ fn render_processes(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
             frame,
             inner,
             "No process samples yet",
-            "The agent will populate this list after two collection cycles.",
+            "Waiting for the agent. Processes appear on the first collection.",
             CYAN,
         );
         return;

@@ -11,5 +11,6 @@ fi
 
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
-    systemctl enable --now nekohub-agent.service
+    systemctl enable nekohub-agent.service
+    systemctl restart nekohub-agent.service
 fi
