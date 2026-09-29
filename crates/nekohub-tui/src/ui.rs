@@ -3156,6 +3156,7 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let hostname = snapshot.map_or(host.target.display_name.as_str(), |sample| {
         sample.hostname.as_str()
     });
+    let agent_version = app.selected_agent_version();
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
@@ -3173,18 +3174,22 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 ),
             ]),
             Line::styled(
-                snapshot.map_or_else(String::new, |sample| {
-                    format!(
-                        "uptime {}    latency {}ms    agent v{}",
-                        human_duration(Duration::from_secs(sample.uptime_secs)),
-                        sample.latency_ms,
-                        if sample.agent_version.is_empty() {
-                            "legacy"
-                        } else {
-                            sample.agent_version.as_str()
-                        }
-                    )
-                }),
+                snapshot.map_or_else(
+                    || {
+                        agent_version.map_or_else(
+                            || "checking agent version...".to_owned(),
+                            |version| format!("collecting metrics    agent v{version}"),
+                        )
+                    },
+                    |sample| {
+                        format!(
+                            "uptime {}    latency {}ms    agent v{}",
+                            human_duration(Duration::from_secs(sample.uptime_secs)),
+                            sample.latency_ms,
+                            agent_version.unwrap_or("legacy")
+                        )
+                    },
+                ),
                 Style::default().fg(Color::Gray),
             ),
             if app.selected_agent_needs_update() {

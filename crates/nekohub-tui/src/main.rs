@@ -94,6 +94,10 @@ enum CollectionEvent {
     RemoteInstallError {
         message: String,
     },
+    AgentVersion {
+        host_id: String,
+        version: String,
+    },
     AgentUpdateComplete,
     AgentUpdateError {
         message: String,
@@ -357,6 +361,9 @@ async fn run_event_loop(
                     }
                 }
                 CollectionEvent::RemoteInstallError { message } => app.fail_remote_install(message),
+                CollectionEvent::AgentVersion { host_id, version } => {
+                    app.apply_agent_version(&host_id, version);
+                }
                 CollectionEvent::AgentUpdateComplete => {
                     app.complete_agent_update();
                     let _ = refresh_tx.send(());
@@ -680,6 +687,8 @@ async fn run_event_loop(
                             KeyCode::Enter => {
                                 if let Some(target) = app.selected_installed_remote().cloned() {
                                     let password = app.take_remote_password();
+                                    let probe_password = password.clone();
+                                    let probe_target = target.alias.clone();
                                     let collector: Arc<dyn Collector> = Arc::new(
                                         SshAgentCollector::new(
                                             target.alias.clone(), password, Duration::from_secs(12),
@@ -691,6 +700,11 @@ async fn run_event_loop(
                                         &mut workers, target, collector, refresh_every,
                                         &event_tx, &refresh_tx, &shutdown_rx,
                                     );
+                                    workers.spawn(probe_remote_agent_version(
+                                        probe_target,
+                                        probe_password,
+                                        event_tx.clone(),
+                                    ));
                                 }
                             }
                             KeyCode::Char(character) => app.push_remote_install_character(character),
@@ -1141,9 +1155,17 @@ progress 30 'Refreshing signed nekoHub repository'
 run_root sh "$installer"
 rm -f "$installer"
 progress 55 'Installing the latest agent'
-run_root apt-get update
-run_root apt-get install -y nekohub-agent
-if getent group docker >/dev/null 2>&1; then
+run_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update
+if ! run_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y nekohub-agent; then
+  installed=$(dpkg-query -W -f='${Version}' nekohub-agent 2>/dev/null || true)
+  candidate=$(apt-cache policy nekohub-agent | sed -n 's/^[[:space:]]*Candidate:[[:space:]]*//p')
+  if [ -z "$installed" ] || [ -z "$candidate" ] || ! dpkg --compare-versions "$installed" ge "$candidate"; then
+    echo 'apt could not install the latest nekohub-agent package' >&2
+    exit 1
+  fi
+  echo 'apt returned an error after installing the current agent; continuing after version verification.'
+fi
+if getent group docker >/dev/null 2>&1 && ! id -nG nekohub-agent | grep -qw docker; then
   run_root usermod -aG docker nekohub-agent
 fi
 progress 82 'Restarting metrics service'
@@ -1151,6 +1173,8 @@ run_root systemctl restart nekohub-agent.service
 run_root systemctl is-active --quiet nekohub-agent.service
 progress 96 'Waiting for the new metrics stream'
 test -S /run/nekohub/agent.sock
+installed=$(dpkg-query -W -f='${Version}' nekohub-agent)
+printf 'NEKOHUB_AGENT_VERSION:%s\n' "$installed"
 echo 'nekoHub agent update complete.'"#;
     let result = run_remote_command(&target, REMOTE_UPDATE, password.as_deref(), &event_tx).await;
     let event = match result {
@@ -1223,12 +1247,12 @@ async fn run_remote_command(
     while stdout_open || stderr_open {
         tokio::select! {
             line = stdout.next_line(), if stdout_open => match line {
-                Ok(Some(line)) => send_remote_install_line(event_tx, line).await,
+                Ok(Some(line)) => send_remote_install_line(event_tx, target, line).await,
                 Ok(None) => stdout_open = false,
                 Err(error) => return Err(format!("Could not read SSH output: {error}")),
             },
             line = stderr.next_line(), if stderr_open => match line {
-                Ok(Some(line)) => send_remote_install_line(event_tx, line).await,
+                Ok(Some(line)) => send_remote_install_line(event_tx, target, line).await,
                 Ok(None) => stderr_open = false,
                 Err(error) => return Err(format!("Could not read SSH errors: {error}")),
             },
@@ -1249,7 +1273,11 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-async fn send_remote_install_line(event_tx: &mpsc::Sender<CollectionEvent>, line: String) {
+async fn send_remote_install_line(
+    event_tx: &mpsc::Sender<CollectionEvent>,
+    host_id: &str,
+    line: String,
+) {
     if let Some(payload) = line.strip_prefix("NEKOHUB_PROGRESS:")
         && let Some((progress, message)) = payload.split_once(':')
         && let Ok(progress) = progress.parse()
@@ -1262,6 +1290,18 @@ async fn send_remote_install_line(event_tx: &mpsc::Sender<CollectionEvent>, line
             .await;
         return;
     }
+    if let Some(version) = line.strip_prefix("NEKOHUB_AGENT_VERSION:") {
+        let version = version.trim();
+        if !version.is_empty() {
+            let _ = event_tx
+                .send(CollectionEvent::AgentVersion {
+                    host_id: host_id.to_owned(),
+                    version: version.to_owned(),
+                })
+                .await;
+        }
+        return;
+    }
     let compact = line.split_whitespace().collect::<Vec<_>>().join(" ");
     if !compact.is_empty() {
         let _ = event_tx
@@ -1270,6 +1310,18 @@ async fn send_remote_install_line(event_tx: &mpsc::Sender<CollectionEvent>, line
             ))
             .await;
     }
+}
+
+async fn probe_remote_agent_version(
+    target: String,
+    password: Option<String>,
+    event_tx: mpsc::Sender<CollectionEvent>,
+) {
+    const VERSION_PROBE: &str = r#"version=$(dpkg-query -W -f='${Version}' nekohub-agent 2>/dev/null || true)
+if [ -n "$version" ]; then
+  printf 'NEKOHUB_AGENT_VERSION:%s\n' "$version"
+fi"#;
+    let _ = run_remote_command(&target, VERSION_PROBE, password.as_deref(), &event_tx).await;
 }
 
 fn begin_agent_setup(

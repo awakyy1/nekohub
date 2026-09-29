@@ -65,6 +65,7 @@ pub struct NavigationMotion {
 pub struct HostState {
     pub target: HostTarget,
     pub snapshot: Option<HostSnapshot>,
+    pub agent_version_hint: Option<String>,
     pub last_error: Option<String>,
     pub cpu_history: VecDeque<u64>,
     pub network_rx_history: VecDeque<u64>,
@@ -76,6 +77,7 @@ impl HostState {
         Self {
             target,
             snapshot: None,
+            agent_version_hint: None,
             last_error: None,
             cpu_history: VecDeque::with_capacity(120),
             network_rx_history: VecDeque::with_capacity(120),
@@ -317,6 +319,9 @@ impl App {
             return;
         };
         let host = &mut self.hosts[index];
+        if !snapshot.agent_version.is_empty() {
+            host.agent_version_hint = Some(snapshot.agent_version.clone());
+        }
         if let Some(cpu) = snapshot.cpu_percent {
             if host.cpu_history.len() == 120 {
                 host.cpu_history.pop_front();
@@ -334,6 +339,15 @@ impl App {
             .push_back(snapshot.network.write_per_sec.max(0.0).round() as u64);
         host.snapshot = Some(snapshot);
         host.last_error = None;
+    }
+
+    pub fn apply_agent_version(&mut self, host_id: &str, version: String) {
+        if version.is_empty() {
+            return;
+        }
+        if let Some(index) = self.by_id.get(host_id).copied() {
+            self.hosts[index].agent_version_hint = Some(version);
+        }
     }
 
     pub fn apply_error(&mut self, host_id: &str, error: String) {
@@ -1260,12 +1274,18 @@ impl App {
     }
 
     pub fn selected_agent_needs_update(&self) -> bool {
-        self.selected()
-            .and_then(|host| host.snapshot.as_ref())
-            .is_some_and(|snapshot| {
-                snapshot.agent_version.is_empty()
-                    || version_is_older(&snapshot.agent_version, env!("CARGO_PKG_VERSION"))
+        self.selected_agent_version()
+            .is_some_and(|version| version_is_older(version, env!("CARGO_PKG_VERSION")))
+    }
+
+    pub fn selected_agent_version(&self) -> Option<&str> {
+        let host = self.selected()?;
+        host.snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                (!snapshot.agent_version.is_empty()).then_some(snapshot.agent_version.as_str())
             })
+            .or(host.agent_version_hint.as_deref())
     }
 
     pub fn register_agent_update_quote(&mut self) -> bool {
@@ -1738,6 +1758,10 @@ mod tests {
         assert!(!version_is_older("0.15.0", "0.14.1"));
 
         let mut app = App::monitoring(vec![HostTarget::from_alias("edge-01")]);
+        app.apply_agent_version("edge-01", "0.11.0".into());
+        assert_eq!(app.selected_agent_version(), Some("0.11.0"));
+        assert!(app.selected_agent_needs_update());
+
         app.apply_snapshot(HostSnapshot {
             host_id: "edge-01".into(),
             agent_version: "0.11.0".into(),
