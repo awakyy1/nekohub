@@ -135,6 +135,8 @@ mod tests {
                 read_per_sec: 12.0,
                 write_per_sec: 4.0,
             },
+            processes: Vec::new(),
+            containers: Vec::new(),
         };
         let output = format_metrics(&snapshot);
         assert!(output.contains("nekohub_host_cpu_usage_ratio{host=\"demo\"} 0.25"));

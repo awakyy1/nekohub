@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime};
 
-use crate::{HostSnapshot, Throughput, Usage};
+use crate::{ContainerSnapshot, HostSnapshot, ProcessSnapshot, Throughput, Usage};
 use serde::{Deserialize, Serialize};
 
 /// Cumulative counters and point-in-time gauges returned by the remote probe.
@@ -22,6 +22,20 @@ pub struct RawHostSample {
     pub load: [f64; 3],
     pub network_rx_bytes: u64,
     pub network_tx_bytes: u64,
+    #[serde(default)]
+    pub processes: Vec<RawProcessSample>,
+    #[serde(default)]
+    pub containers: Vec<ContainerSnapshot>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RawProcessSample {
+    pub pid: u32,
+    pub name: String,
+    pub command: String,
+    pub state: String,
+    pub cpu_ticks: u64,
+    pub memory_bytes: u64,
 }
 
 /// Calculates rates while retaining only the previous successful sample.
@@ -64,6 +78,47 @@ impl RateTracker {
             })
             .unwrap_or((None, Throughput::default()));
 
+        let total_tick_delta = self.previous.as_ref().map_or(0, |previous| {
+            raw.cpu_total_ticks.saturating_sub(previous.cpu_total_ticks)
+        });
+        let previous_processes = self.previous.as_ref().map(|previous| {
+            previous
+                .processes
+                .iter()
+                .map(|process| (process.pid, process.cpu_ticks))
+                .collect::<std::collections::HashMap<_, _>>()
+        });
+        let mut processes = raw
+            .processes
+            .iter()
+            .map(|process| {
+                let cpu_percent = previous_processes
+                    .as_ref()
+                    .and_then(|previous| previous.get(&process.pid))
+                    .filter(|_| total_tick_delta > 0)
+                    .map_or(0.0, |previous_ticks| {
+                        process.cpu_ticks.saturating_sub(*previous_ticks) as f64
+                            / total_tick_delta as f64
+                            * 100.0
+                    });
+                ProcessSnapshot {
+                    pid: process.pid,
+                    name: process.name.clone(),
+                    command: process.command.clone(),
+                    state: process.state.clone(),
+                    cpu_percent,
+                    memory_bytes: process.memory_bytes,
+                }
+            })
+            .collect::<Vec<_>>();
+        processes.sort_by(|left, right| {
+            right
+                .cpu_percent
+                .total_cmp(&left.cpu_percent)
+                .then_with(|| right.memory_bytes.cmp(&left.memory_bytes))
+        });
+        processes.truncate(200);
+
         let snapshot = HostSnapshot {
             host_id: raw.host_id.clone(),
             collected_at: raw.collected_at,
@@ -85,6 +140,8 @@ impl RateTracker {
             },
             load: raw.load,
             network,
+            processes,
+            containers: raw.containers.clone(),
         };
         self.previous = Some(raw);
         snapshot
@@ -113,6 +170,8 @@ mod tests {
             load: [0.1, 0.2, 0.3],
             network_rx_bytes: rx,
             network_tx_bytes: 0,
+            processes: Vec::new(),
+            containers: Vec::new(),
         }
     }
 
@@ -125,10 +184,30 @@ mod tests {
     #[test]
     fn derives_rates_from_successive_samples() {
         let mut tracker = RateTracker::default();
-        tracker.apply(raw(1, 100, 50, 10));
-        let snapshot = tracker.apply(raw(3, 300, 130, 210));
+        let mut first = raw(1, 100, 50, 10);
+        first.processes.push(RawProcessSample {
+            pid: 42,
+            name: "worker".into(),
+            command: "worker --serve".into(),
+            state: "R".into(),
+            cpu_ticks: 10,
+            memory_bytes: 1024,
+        });
+        tracker.apply(first);
+        let mut second = raw(3, 300, 130, 210);
+        second.processes.push(RawProcessSample {
+            pid: 42,
+            name: "worker".into(),
+            command: "worker --serve".into(),
+            state: "R".into(),
+            cpu_ticks: 50,
+            memory_bytes: 2048,
+        });
+        let snapshot = tracker.apply(second);
         assert_eq!(snapshot.cpu_percent, Some(60.0));
         assert!((snapshot.network.read_per_sec - 100.0).abs() < f64::EPSILON);
         assert_eq!(snapshot.memory.percent(), Some(75.0));
+        assert!((snapshot.processes[0].cpu_percent - 20.0).abs() < f64::EPSILON);
+        assert_eq!(snapshot.processes[0].memory_bytes, 2048);
     }
 }

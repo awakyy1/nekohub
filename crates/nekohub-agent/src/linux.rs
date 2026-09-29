@@ -1,10 +1,11 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
     time::{Instant, SystemTime},
 };
 
-use nekohub_core::{CollectError, RawHostSample};
+use nekohub_core::{CollectError, ContainerSnapshot, RawHostSample, RawProcessSample};
 
 #[derive(Debug, Clone)]
 pub struct NativeLinuxCollector {
@@ -42,6 +43,8 @@ impl NativeLinuxCollector {
             .map_err(|error| source_error("root filesystem total", &error))?;
         let root_available_bytes = fs2::available_space(&self.root_filesystem)
             .map_err(|error| source_error("root filesystem available", &error))?;
+        let processes = collect_processes(&self.procfs);
+        let containers = collect_containers();
 
         Ok(RawHostSample {
             host_id: host_id.to_owned(),
@@ -64,8 +67,168 @@ impl NativeLinuxCollector {
             load,
             network_rx_bytes,
             network_tx_bytes,
+            processes,
+            containers,
         })
     }
+}
+
+fn collect_processes(procfs: &Path) -> Vec<RawProcessSample> {
+    let Ok(entries) = fs::read_dir(procfs) else {
+        return Vec::new();
+    };
+    let mut processes = entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
+            read_process(&entry.path(), pid)
+        })
+        .collect::<Vec<_>>();
+    processes.sort_by(|left, right| {
+        right
+            .cpu_ticks
+            .cmp(&left.cpu_ticks)
+            .then_with(|| right.memory_bytes.cmp(&left.memory_bytes))
+    });
+    processes.truncate(512);
+    processes
+}
+
+fn read_process(path: &Path, pid: u32) -> Option<RawProcessSample> {
+    let stat = fs::read_to_string(path.join("stat")).ok()?;
+    let name_start = stat.find('(')?.saturating_add(1);
+    let name_end = stat.rfind(')')?;
+    let name = stat.get(name_start..name_end)?.to_owned();
+    let fields = stat
+        .get(name_end.saturating_add(2)..)?
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let state = fields.first()?.to_string();
+    let cpu_ticks = fields
+        .get(11)?
+        .parse::<u64>()
+        .ok()?
+        .saturating_add(fields.get(12)?.parse::<u64>().ok()?);
+    let memory_bytes = fs::read_to_string(path.join("status"))
+        .ok()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                line.strip_prefix("VmRSS:")?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            })
+        })
+        .unwrap_or_default()
+        .saturating_mul(1024);
+    let command = fs::read(path.join("cmdline"))
+        .ok()
+        .map(|bytes| {
+            String::from_utf8_lossy(&bytes)
+                .trim_end_matches('\0')
+                .replace('\0', " ")
+        })
+        .filter(|command| !command.is_empty())
+        .unwrap_or_else(|| name.clone());
+    Some(RawProcessSample {
+        pid,
+        name,
+        command,
+        state,
+        cpu_ticks,
+        memory_bytes,
+    })
+}
+
+fn collect_containers() -> Vec<ContainerSnapshot> {
+    let mut containers = ["docker", "podman"]
+        .into_iter()
+        .flat_map(container_stats)
+        .collect::<Vec<_>>();
+    containers.sort_by(|left, right| right.cpu_percent.total_cmp(&left.cpu_percent));
+    containers
+}
+
+fn container_stats(engine: &str) -> Vec<ContainerSnapshot> {
+    let output = Command::new(engine)
+        .args([
+            "stats",
+            "--no-stream",
+            "--format",
+            "{{.ID}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}",
+        ])
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| parse_container_stat(engine, line))
+        .collect()
+}
+
+#[allow(clippy::similar_names)]
+fn parse_container_stat(engine: &str, line: &str) -> Option<ContainerSnapshot> {
+    let fields = line.split('\t').collect::<Vec<_>>();
+    if fields.len() != 7 {
+        return None;
+    }
+    let (memory_used_bytes, memory_limit_bytes) = parse_usage_pair(fields[3]);
+    let (network_rx_bytes, network_tx_bytes) = parse_usage_pair(fields[4]);
+    let (block_read_bytes, block_write_bytes) = parse_usage_pair(fields[5]);
+    Some(ContainerSnapshot {
+        id: fields[0].to_owned(),
+        name: fields[1].to_owned(),
+        engine: engine.to_owned(),
+        state: "running".into(),
+        cpu_percent: fields[2].trim_end_matches('%').parse().unwrap_or_default(),
+        memory_used_bytes,
+        memory_limit_bytes,
+        network_rx_bytes,
+        network_tx_bytes,
+        block_read_bytes,
+        block_write_bytes,
+        pids: fields[6].parse().unwrap_or_default(),
+    })
+}
+
+fn parse_usage_pair(value: &str) -> (u64, u64) {
+    let mut values = value.split('/').map(|part| parse_size(part.trim()));
+    (
+        values.next().unwrap_or_default(),
+        values.next().unwrap_or_default(),
+    )
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn parse_size(value: &str) -> u64 {
+    const UNITS: [(&str, f64); 9] = [
+        ("TiB", 1_099_511_627_776.0),
+        ("GiB", 1_073_741_824.0),
+        ("MiB", 1_048_576.0),
+        ("KiB", 1_024.0),
+        ("TB", 1_000_000_000_000.0),
+        ("GB", 1_000_000_000.0),
+        ("MB", 1_000_000.0),
+        ("kB", 1_000.0),
+        ("B", 1.0),
+    ];
+    for (suffix, multiplier) in UNITS {
+        if let Some(number) = value.strip_suffix(suffix) {
+            return number.trim().parse::<f64>().map_or(0, |number| {
+                (number * multiplier).clamp(0.0, u64::MAX as f64) as u64
+            });
+        }
+    }
+    0
 }
 
 fn read(path: impl AsRef<Path>) -> Result<String, CollectError> {
@@ -206,5 +369,19 @@ mod tests {
     #[test]
     fn rejects_incomplete_cpu_sample() {
         assert!(parse_cpu("cpu 1 2\n").is_err());
+    }
+
+    #[test]
+    fn parses_container_resource_units() {
+        let container = parse_container_stat(
+            "docker",
+            "a1b2c3\tapi\t12.5%\t256MiB / 1GiB\t1.5MB / 800kB\t12MB / 4MB\t9",
+        )
+        .unwrap();
+
+        assert_eq!(container.name, "api");
+        assert_eq!(container.memory_used_bytes, 256 * 1024 * 1024);
+        assert_eq!(container.memory_limit_bytes, 1024 * 1024 * 1024);
+        assert_eq!(container.pids, 9);
     }
 }

@@ -1,4 +1,5 @@
 mod app;
+mod credentials;
 mod demo;
 mod groups;
 mod machines;
@@ -252,6 +253,7 @@ async fn run_tui(
     app.custom_theme = preferences.custom_theme;
     app.local_alias = preferences.local_alias;
     app.last_machine_id = preferences.last_machine_id;
+    app.credentials = credentials::load(&credentials::state_path());
     if let Some(alias) = app.local_alias.as_ref() {
         app.local_name.clone_from(alias);
     }
@@ -387,7 +389,7 @@ async fn run_event_loop(
                         continue;
                     }
                     if matches!(key.code, KeyCode::Char('q'))
-                        && !matches!(app.view, View::CreateGroup | View::GroupAssign | View::MachineAlias | View::RemoteInstall | View::RemoteConnect | View::RemoteUninstallConfirm | View::ThemeImport | View::TerminalPassword)
+                        && !matches!(app.view, View::CreateGroup | View::GroupAssign | View::MachineAlias | View::RemoteInstall | View::RemoteConnect | View::RemoteUninstallConfirm | View::ThemeImport | View::CredentialKeyEdit | View::TerminalPassword | View::TerminalSavePassword)
                         || matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break Ok(());
@@ -740,6 +742,26 @@ async fn run_event_loop(
                             {
                                 app.begin_theme_import();
                             }
+                            KeyCode::Enter
+                                if app.settings_focus == SettingsFocus::Content
+                                    && app.settings_selected == 2 =>
+                            {
+                                app.begin_credential_key_edit();
+                            }
+                            KeyCode::Char('p')
+                                if app.settings_focus == SettingsFocus::Content
+                                    && app.settings_selected == 2 =>
+                            {
+                                app.remove_selected_password();
+                                save_credentials(app);
+                            }
+                            KeyCode::Char('x')
+                                if app.settings_focus == SettingsFocus::Content
+                                    && app.settings_selected == 2 =>
+                            {
+                                app.remove_selected_identity_file();
+                                save_credentials(app);
+                            }
                             KeyCode::Esc => app.open_home(),
                             _ => {}
                         },
@@ -758,6 +780,22 @@ async fn run_event_loop(
                                 }
                             }
                             KeyCode::Char(character) => app.push_theme_path_character(character),
+                            _ => {}
+                        },
+                        View::CredentialKeyEdit => match key.code {
+                            KeyCode::Esc => app.cancel_credential_key_edit(),
+                            KeyCode::Backspace => app.pop_credential_key_character(),
+                            KeyCode::Enter => match app.save_credential_key() {
+                                Ok(()) => save_credentials(app),
+                                Err(message) => app.credential_key_error = Some(message),
+                            },
+                            KeyCode::Char(character)
+                                if !key.modifiers.intersects(
+                                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                                ) =>
+                            {
+                                app.push_credential_key_character(character);
+                            }
                             _ => {}
                         },
                         View::Overview => match key.code {
@@ -784,20 +822,10 @@ async fn run_event_loop(
                             KeyCode::Esc => app.close_terminal(),
                             KeyCode::Backspace => app.pop_terminal_password_character(),
                             KeyCode::Enter => {
-                                let (outer_cols, outer_rows) = crossterm::terminal::size()?;
-                                let (rows, cols) = embedded_size(outer_cols, outer_rows);
-                                let request = app.start_terminal(rows, cols);
-                                match SshTerminalSession::spawn(
-                                    request,
-                                    rows,
-                                    cols,
-                                    terminal_event_tx.clone(),
-                                ) {
-                                    Ok(session) => ssh_session = Some(session),
-                                    Err(message) => {
-                                        let generation = app.terminal.generation();
-                                        app.terminal.fail(generation, message);
-                                    }
+                                if app.should_confirm_terminal_password_save() {
+                                    app.begin_terminal_password_save();
+                                } else {
+                                    ssh_session = spawn_ssh_terminal(app, &terminal_event_tx);
                                 }
                             }
                             KeyCode::Char(character)
@@ -805,6 +833,23 @@ async fn run_event_loop(
                                     KeyModifiers::CONTROL | KeyModifiers::ALT,
                                 ) => {
                                 app.push_terminal_password_character(character);
+                            }
+                            _ => {}
+                        },
+                        View::TerminalSavePassword => match key.code {
+                            KeyCode::Esc => app.view = View::TerminalPassword,
+                            KeyCode::Left
+                            | KeyCode::Right
+                            | KeyCode::Up
+                            | KeyCode::Down
+                            | KeyCode::Tab
+                            | KeyCode::BackTab => app.toggle_terminal_password_save(),
+                            KeyCode::Enter => {
+                                app.save_terminal_password();
+                                if app.terminal_save_selected == 0 {
+                                    save_credentials(app);
+                                }
+                                ssh_session = spawn_ssh_terminal(app, &terminal_event_tx);
                             }
                             _ => {}
                         },
@@ -855,6 +900,37 @@ async fn save_preferences(app: &mut App) {
     };
     if let Err(message) = preferences::save(&preferences::state_path(), updated).await {
         app.settings_notice = Some(message);
+    }
+}
+
+fn save_credentials(app: &mut App) {
+    if let Err(message) = credentials::save(&credentials::state_path(), &app.credentials) {
+        app.settings_notice = Some(message);
+    }
+}
+
+fn spawn_ssh_terminal(
+    app: &mut App,
+    event_tx: &mpsc::UnboundedSender<TerminalEvent>,
+) -> Option<SshTerminalSession> {
+    let (outer_cols, outer_rows) = match crossterm::terminal::size() {
+        Ok(size) => size,
+        Err(error) => {
+            let generation = app.terminal.generation();
+            app.terminal
+                .fail(generation, format!("Could not read terminal size: {error}"));
+            return None;
+        }
+    };
+    let (rows, cols) = embedded_size(outer_cols, outer_rows);
+    let request = app.start_terminal(rows, cols);
+    match SshTerminalSession::spawn(request, rows, cols, event_tx.clone()) {
+        Ok(session) => Some(session),
+        Err(message) => {
+            let generation = app.terminal.generation();
+            app.terminal.fail(generation, message);
+            None
+        }
     }
 }
 

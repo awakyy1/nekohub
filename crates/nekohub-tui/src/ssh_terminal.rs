@@ -1,6 +1,7 @@
 use std::{
     fmt,
     io::{Read, Write},
+    path::PathBuf,
     thread,
 };
 
@@ -25,6 +26,8 @@ pub struct TerminalPanel {
     pub phase: TerminalPhase,
     pub password: String,
     pub target: String,
+    pub identity_file: Option<PathBuf>,
+    password_is_saved: bool,
     generation: u64,
     boot_started_at: u64,
 }
@@ -47,6 +50,8 @@ impl Default for TerminalPanel {
             phase: TerminalPhase::Idle,
             password: String::new(),
             target: String::new(),
+            identity_file: None,
+            password_is_saved: false,
             generation: 0,
             boot_started_at: 0,
         }
@@ -54,20 +59,39 @@ impl Default for TerminalPanel {
 }
 
 impl TerminalPanel {
-    pub fn begin_password(&mut self, target: &str) {
-        self.password.clear();
+    pub fn begin_password(
+        &mut self,
+        target: &str,
+        saved_password: Option<&str>,
+        identity_file: Option<PathBuf>,
+    ) {
+        saved_password
+            .unwrap_or_default()
+            .clone_into(&mut self.password);
         target.clone_into(&mut self.target);
+        self.identity_file = identity_file;
+        self.password_is_saved = saved_password.is_some();
         self.phase = TerminalPhase::Password;
     }
 
     pub fn push_password_character(&mut self, character: char) {
         if self.password.chars().count() < 256 && !character.is_control() {
             self.password.push(character);
+            self.password_is_saved = false;
         }
     }
 
     pub fn pop_password_character(&mut self) {
         self.password.pop();
+        self.password_is_saved = false;
+    }
+
+    pub const fn password_is_saved(&self) -> bool {
+        self.password_is_saved
+    }
+
+    pub const fn mark_password_saved(&mut self) {
+        self.password_is_saved = true;
     }
 
     pub fn start(&mut self, rows: u16, cols: u16, animation_tick: u64) -> TerminalRequest {
@@ -78,6 +102,7 @@ impl TerminalPanel {
         TerminalRequest {
             target: self.target.clone(),
             password: (!self.password.is_empty()).then(|| std::mem::take(&mut self.password)),
+            identity_file: self.identity_file.clone(),
             generation: self.generation,
         }
     }
@@ -85,6 +110,8 @@ impl TerminalPanel {
     pub fn cancel(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.password.clear();
+        self.identity_file = None;
+        self.password_is_saved = false;
         self.phase = TerminalPhase::Idle;
     }
 
@@ -138,6 +165,7 @@ impl TerminalPanel {
 pub struct TerminalRequest {
     pub target: String,
     pub password: Option<String>,
+    pub identity_file: Option<PathBuf>,
     pub generation: u64,
 }
 
@@ -164,6 +192,7 @@ impl SshTerminalSession {
         let TerminalRequest {
             target,
             password,
+            identity_file,
             generation,
         } = request;
         let pair = native_pty_system()
@@ -182,8 +211,12 @@ impl SshTerminalSession {
             "ServerAliveInterval=15",
             "-o",
             "ServerAliveCountMax=3",
-            target.as_str(),
         ]);
+        if let Some(identity_file) = identity_file {
+            command.arg("-i");
+            command.arg(identity_file);
+        }
+        command.arg(target);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
 
@@ -377,12 +410,13 @@ mod tests {
     #[test]
     fn password_is_removed_when_connection_starts() {
         let mut panel = TerminalPanel::default();
-        panel.begin_password("server");
+        panel.begin_password("server", None, None);
         for character in "secret".chars() {
             panel.push_password_character(character);
         }
         let request = panel.start(20, 60, 1);
         assert_eq!(request.password.as_deref(), Some("secret"));
+        assert!(request.identity_file.is_none());
         assert!(panel.password.is_empty());
         assert_eq!(panel.phase, TerminalPhase::Booting);
         panel.cancel();

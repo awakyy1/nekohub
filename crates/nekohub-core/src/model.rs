@@ -41,6 +41,32 @@ pub struct Throughput {
     pub write_per_sec: f64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProcessSnapshot {
+    pub pid: u32,
+    pub name: String,
+    pub command: String,
+    pub state: String,
+    pub cpu_percent: f64,
+    pub memory_bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ContainerSnapshot {
+    pub id: String,
+    pub name: String,
+    pub engine: String,
+    pub state: String,
+    pub cpu_percent: f64,
+    pub memory_used_bytes: u64,
+    pub memory_limit_bytes: u64,
+    pub network_rx_bytes: u64,
+    pub network_tx_bytes: u64,
+    pub block_read_bytes: u64,
+    pub block_write_bytes: u64,
+    pub pids: u64,
+}
+
 /// Complete, immutable view produced after normalizing a raw sample.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostSnapshot {
@@ -56,4 +82,8 @@ pub struct HostSnapshot {
     pub root_disk: Usage,
     pub load: [f64; 3],
     pub network: Throughput,
+    #[serde(default)]
+    pub processes: Vec<ProcessSnapshot>,
+    #[serde(default)]
+    pub containers: Vec<ContainerSnapshot>,
 }

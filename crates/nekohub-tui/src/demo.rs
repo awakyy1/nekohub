@@ -7,7 +7,9 @@
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
-use nekohub_core::{CollectError, Collector, HostTarget, RawHostSample};
+use nekohub_core::{
+    CollectError, Collector, ContainerSnapshot, HostTarget, RawHostSample, RawProcessSample,
+};
 
 #[derive(Debug)]
 pub struct DemoCollector {
@@ -54,8 +56,58 @@ impl Collector for DemoCollector {
             load: [cpu / 30.0, cpu / 35.0, cpu / 40.0],
             network_rx_bytes: (elapsed * (50_000.0 + seed as f64 * 1_000.0)) as u64,
             network_tx_bytes: (elapsed * (18_000.0 + seed as f64 * 700.0)) as u64,
+            processes: demo_processes(elapsed, seed),
+            containers: demo_containers(wave, seed),
         })
     }
+}
+
+fn demo_processes(elapsed: f64, seed: u64) -> Vec<RawProcessSample> {
+    [
+        (912, "postgres", "postgres: writer", "S", 680_u64, 420_u64),
+        (1440, "nginx", "nginx: worker process", "S", 410, 86),
+        (2217, "node", "node /srv/api/server.js", "R", 950, 310),
+        (2841, "redis-server", "redis-server *:6379", "S", 260, 124),
+        (3200, "nekohub-agent", "nekohub-agent", "S", 180, 24),
+    ]
+    .into_iter()
+    .map(
+        |(pid, name, command, state, activity, memory_mib)| RawProcessSample {
+            pid,
+            name: name.into(),
+            command: command.into(),
+            state: state.into(),
+            cpu_ticks: (elapsed * (activity + seed) as f64) as u64,
+            memory_bytes: memory_mib * 1024 * 1024,
+        },
+    )
+    .collect()
+}
+
+fn demo_containers(wave: f64, seed: u64) -> Vec<ContainerSnapshot> {
+    [
+        ("web", "a13f52ce", 4.0, 380_u64, 1024_u64, 8_u64),
+        ("database", "c94a01bd", 7.5, 920, 2048, 18),
+        ("cache", "ff12b890", 1.2, 110, 512, 5),
+    ]
+    .into_iter()
+    .map(
+        |(name, id, cpu, used_mib, limit_mib, pids)| ContainerSnapshot {
+            id: id.into(),
+            name: name.into(),
+            engine: "docker".into(),
+            state: "running".into(),
+            cpu_percent: cpu + wave * seed as f64 / 5.0,
+            memory_used_bytes: used_mib * 1024 * 1024,
+            memory_limit_bytes: limit_mib * 1024 * 1024,
+            network_rx_bytes: (wave * 18_000_000.0) as u64,
+            network_tx_bytes: (wave * 7_000_000.0) as u64,
+            block_read_bytes: (wave * 80_000_000.0) as u64,
+            block_write_bytes: (wave * 24_000_000.0) as u64,
+            pids,
+        },
+    )
+    .collect()
 }
 
 pub fn targets() -> Vec<HostTarget> {

@@ -202,6 +202,8 @@ pub fn parse_probe(
         load: [decimal("load_1")?, decimal("load_5")?, decimal("load_15")?],
         network_rx_bytes: integer("network_rx_bytes")?,
         network_tx_bytes: integer("network_tx_bytes")?,
+        processes: Vec::new(),
+        containers: Vec::new(),
     })
 }
 

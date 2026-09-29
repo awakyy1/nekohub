@@ -128,12 +128,23 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
             render_theme_import(frame, frame.area(), app);
             return;
         }
-        View::Overview | View::Detail | View::TerminalPassword | View::Terminal => {}
+        View::CredentialKeyEdit => {
+            render_settings(frame, frame.area(), app);
+            render_credential_key_edit(frame, frame.area(), app);
+            return;
+        }
+        View::Overview
+        | View::Detail
+        | View::TerminalPassword
+        | View::TerminalSavePassword
+        | View::Terminal => {}
     }
     let footer = if app.view == View::Terminal {
         "F10 close terminal  ·  Ctrl+] alternative  ·  input goes directly over SSH"
     } else if app.view == View::TerminalPassword {
         "Type password  ·  Enter connect  ·  Esc cancel"
+    } else if app.view == View::TerminalSavePassword {
+        "←→ choose  ·  Enter confirm  ·  Esc back"
     } else {
         "↑↓ sections  ·  Enter open  ·  n/p machine  ·  r refresh  ·  Esc home  ·  q quit"
     };
@@ -144,7 +155,7 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
         .split(content);
     render_monitoring_bar(frame, sections[0], app);
     match app.view {
-        View::Overview | View::TerminalPassword | View::Terminal => {
+        View::Overview | View::TerminalPassword | View::TerminalSavePassword | View::Terminal => {
             render_overview(frame, sections[1], app);
         }
         View::Detail => render_detail(frame, sections[1], app.selected()),
@@ -162,9 +173,13 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
         | View::RemoteUninstallConfirm
         | View::RemoteInstallProgress
         | View::Settings
-        | View::ThemeImport => {
+        | View::ThemeImport
+        | View::CredentialKeyEdit => {
             unreachable!("setup views return before shell render")
         }
+    }
+    if app.view == View::TerminalSavePassword {
+        render_terminal_password_save(frame, frame.area(), app);
     }
 }
 
@@ -1128,6 +1143,11 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let sections = [
         ("Appearance", "Background and motion preferences", ORANGE),
         ("Themes", "Palette and community themes", CYAN),
+        (
+            "Passwords & keys",
+            "SSH credentials managed per machine",
+            AMBER,
+        ),
         ("Agents", "Local service and remote pairing", GREEN),
         (
             "Machine groups",
@@ -1170,6 +1190,10 @@ fn render_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
     if app.settings_selected == 1 {
         render_theme_settings(frame, columns[2], app, color);
+        return;
+    }
+    if app.settings_selected == 2 {
+        render_credentials_settings(frame, columns[2], app, color);
         return;
     }
     frame.render_widget(
@@ -1426,6 +1450,166 @@ fn render_theme_settings(frame: &mut Frame<'_>, area: Rect, app: &App, color: Co
         Paragraph::new(message).style(Style::default().fg(color)),
         rows[3],
     );
+}
+
+fn render_credentials_settings(frame: &mut Frame<'_>, area: Rect, app: &App, color: Color) {
+    let block = Block::default()
+        .title(" PASSWORDS & KEYS ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(5),
+            Constraint::Length(3),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Credentials by machine", Style::default().fg(color).bold()),
+            Line::styled(
+                "Passwords are hidden and stored with owner-only file permissions.",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::styled(
+                "Saved keys are passed to OpenSSH only for the selected machine.",
+                Style::default().fg(DIM),
+            ),
+        ]),
+        rows[0],
+    );
+    let machines = app.credential_machines();
+    let lines = if machines.is_empty() {
+        vec![Line::styled(
+            "No SSH machines found. Add one in ~/.ssh/config first.",
+            Style::default().fg(DIM),
+        )]
+    } else {
+        machines
+            .iter()
+            .enumerate()
+            .map(|(index, (alias, display_name))| {
+                let credential = app.credentials.get(alias);
+                let password = if credential.and_then(|item| item.password.as_ref()).is_some() {
+                    "password saved"
+                } else {
+                    "no password"
+                };
+                let key = credential
+                    .and_then(|item| item.identity_file.as_ref())
+                    .map_or_else(
+                        || "SSH config/default key".into(),
+                        |path| path.display().to_string(),
+                    );
+                let selected = app.settings_focus == SettingsFocus::Content
+                    && app.settings_item_selected == index;
+                Line::from(vec![
+                    Span::styled(
+                        if selected { " › " } else { "   " },
+                        Style::default().fg(color).bold(),
+                    ),
+                    Span::styled(display_name, Style::default().fg(TEXT).bold()),
+                    Span::styled(format!("  {alias}  "), Style::default().fg(DIM)),
+                    Span::styled(
+                        password,
+                        Style::default().fg(
+                            if credential.and_then(|item| item.password.as_ref()).is_some() {
+                                GREEN
+                            } else {
+                                Color::Gray
+                            },
+                        ),
+                    ),
+                    Span::styled(format!("  key: {key}"), Style::default().fg(CYAN)),
+                ])
+            })
+            .collect()
+    };
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[1]);
+    let message = app
+        .settings_notice
+        .as_deref()
+        .unwrap_or("Enter edit key path  ·  p remove password  ·  x remove managed key");
+    frame.render_widget(
+        Paragraph::new(message)
+            .style(Style::default().fg(color))
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(LINE)),
+            ),
+        rows[2],
+    );
+}
+
+fn render_credential_key_edit(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(78);
+    let height = area.height.min(15);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, modal);
+    let alias = app.selected_credential_alias().unwrap_or_default();
+    let block = Block::default()
+        .title(format!(" SSH KEY · {alias} "))
+        .title_bottom(Line::from(" Enter save  ·  Esc cancel ").centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(AMBER))
+        .style(canvas_style(app));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(3),
+            Constraint::Min(2),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Private SSH key path", Style::default().fg(TEXT).bold()),
+            Line::from(""),
+            Line::styled(
+                "The file must already exist. Paths beginning with ~/ are supported.",
+                Style::default().fg(Color::Gray),
+            ),
+        ])
+        .alignment(Alignment::Center),
+        rows[0],
+    );
+    let cursor = if app.animation_tick % 10 < 5 {
+        "_"
+    } else {
+        " "
+    };
+    frame.render_widget(
+        Paragraph::new(format!(" {}{cursor}", app.credential_key_draft)).block(
+            Block::default()
+                .title(" Key file ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(AMBER)),
+        ),
+        rows[1],
+    );
+    if let Some(error) = app.credential_key_error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(error)
+                .style(Style::default().fg(RED))
+                .alignment(Alignment::Center),
+            rows[2],
+        );
+    }
 }
 
 fn render_theme_import(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -2505,6 +2689,14 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
         render_terminal_panel(frame, animated_area(columns[2], app, 2, 4), app, host);
         return;
     }
+    if app.monitor_selected == 1 {
+        render_processes(frame, animated_area(columns[2], app, 2, 4), host);
+        return;
+    }
+    if app.monitor_selected == 5 {
+        render_containers(frame, animated_area(columns[2], app, 2, 4), host);
+        return;
+    }
     if app.monitor_selected != 0 {
         render_monitor_placeholder(frame, animated_area(columns[2], app, 2, 4), app, host);
         return;
@@ -2628,6 +2820,261 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
     render_system_pulse(frame, animated_area(right[4], app, 4, 4), host);
 }
 
+fn render_processes(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
+    let processes = host
+        .snapshot
+        .as_ref()
+        .map_or(&[][..], |snapshot| snapshot.processes.as_slice());
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" PROCESSES  ", Style::default().fg(CYAN).bold()),
+            Span::styled(
+                format!("{} tracked", processes.len()),
+                Style::default().fg(DIM),
+            ),
+        ]))
+        .title_bottom(Line::styled(
+            " sorted by live CPU, then memory ",
+            Style::default().fg(DIM),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(CYAN));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if processes.is_empty() {
+        render_monitor_empty(
+            frame,
+            inner,
+            "No process samples yet",
+            "The agent will populate this list after two collection cycles.",
+            CYAN,
+        );
+        return;
+    }
+    let visible = usize::from(inner.height.saturating_sub(2));
+    if inner.width < 78 {
+        let header = Row::new(["PID", "PROCESS", "CPU", "MEMORY"])
+            .style(Style::default().fg(CYAN).bold())
+            .bottom_margin(1);
+        let rows = processes.iter().take(visible).map(|process| {
+            Row::new([
+                process.pid.to_string(),
+                clipped(&process.name, 22),
+                format!("{:>5.1}%", process.cpu_percent),
+                bytes(process.memory_bytes),
+            ])
+            .style(process_style(&process.state))
+        });
+        frame.render_widget(
+            Table::new(
+                rows,
+                [
+                    Constraint::Length(7),
+                    Constraint::Min(10),
+                    Constraint::Length(8),
+                    Constraint::Length(11),
+                ],
+            )
+            .header(header)
+            .column_spacing(1),
+            inner,
+        );
+    } else {
+        let header = Row::new(["PID", "S", "PROCESS", "CPU", "MEMORY", "COMMAND"])
+            .style(Style::default().fg(CYAN).bold())
+            .bottom_margin(1);
+        let rows = processes.iter().take(visible).map(|process| {
+            Row::new([
+                process.pid.to_string(),
+                process.state.clone(),
+                clipped(&process.name, 20),
+                format!("{:>5.1}%", process.cpu_percent),
+                bytes(process.memory_bytes),
+                clipped(&process.command, 48),
+            ])
+            .style(process_style(&process.state))
+        });
+        frame.render_widget(
+            Table::new(
+                rows,
+                [
+                    Constraint::Length(8),
+                    Constraint::Length(3),
+                    Constraint::Length(20),
+                    Constraint::Length(8),
+                    Constraint::Length(11),
+                    Constraint::Min(12),
+                ],
+            )
+            .header(header)
+            .column_spacing(1),
+            inner,
+        );
+    }
+}
+
+fn process_style(state: &str) -> Style {
+    Style::default().fg(if state == "R" { GREEN } else { Color::Gray })
+}
+
+#[allow(clippy::too_many_lines)]
+fn render_containers(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
+    let containers = host
+        .snapshot
+        .as_ref()
+        .map_or(&[][..], |snapshot| snapshot.containers.as_slice());
+    let running = containers
+        .iter()
+        .filter(|container| container.state == "running")
+        .count();
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" CONTAINERS  ", Style::default().fg(CYAN).bold()),
+            Span::styled(
+                format!("{running} running  ·  {} discovered", containers.len()),
+                Style::default().fg(DIM),
+            ),
+        ]))
+        .title_bottom(Line::styled(
+            " Docker and Podman · refreshed with the machine sample ",
+            Style::default().fg(DIM),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(CYAN));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if containers.is_empty() {
+        render_monitor_empty(
+            frame,
+            inner,
+            "No active containers found",
+            "Start a container or grant the agent access to the Docker/Podman runtime.",
+            CYAN,
+        );
+        return;
+    }
+    let visible = usize::from(inner.height.saturating_sub(2));
+    if inner.width < 100 {
+        let header = Row::new(["ENGINE", "CONTAINER", "CPU", "MEMORY", "PIDS"])
+            .style(Style::default().fg(CYAN).bold())
+            .bottom_margin(1);
+        let rows = containers.iter().take(visible).map(|container| {
+            Row::new([
+                container.engine.clone(),
+                clipped(&container.name, 20),
+                format!("{:.1}%", container.cpu_percent),
+                container_memory(container),
+                container.pids.to_string(),
+            ])
+            .style(container_style(&container.state))
+        });
+        frame.render_widget(
+            Table::new(
+                rows,
+                [
+                    Constraint::Length(8),
+                    Constraint::Min(10),
+                    Constraint::Length(8),
+                    Constraint::Length(18),
+                    Constraint::Length(6),
+                ],
+            )
+            .header(header)
+            .column_spacing(1),
+            inner,
+        );
+    } else {
+        let header = Row::new([
+            "ENGINE",
+            "CONTAINER",
+            "STATE",
+            "CPU",
+            "MEMORY",
+            "NETWORK",
+            "BLOCK I/O",
+            "PIDS",
+        ])
+        .style(Style::default().fg(CYAN).bold())
+        .bottom_margin(1);
+        let rows = containers.iter().take(visible).map(|container| {
+            Row::new([
+                container.engine.clone(),
+                clipped(&container.name, 18),
+                container.state.clone(),
+                format!("{:.1}%", container.cpu_percent),
+                container_memory(container),
+                format!(
+                    "↓{} ↑{}",
+                    bytes(container.network_rx_bytes),
+                    bytes(container.network_tx_bytes)
+                ),
+                format!(
+                    "↓{} ↑{}",
+                    bytes(container.block_read_bytes),
+                    bytes(container.block_write_bytes)
+                ),
+                container.pids.to_string(),
+            ])
+            .style(container_style(&container.state))
+        });
+        frame.render_widget(
+            Table::new(
+                rows,
+                [
+                    Constraint::Length(8),
+                    Constraint::Length(18),
+                    Constraint::Length(9),
+                    Constraint::Length(8),
+                    Constraint::Length(20),
+                    Constraint::Length(20),
+                    Constraint::Length(20),
+                    Constraint::Length(6),
+                ],
+            )
+            .header(header)
+            .column_spacing(1),
+            inner,
+        );
+    }
+}
+
+fn container_memory(container: &nekohub_core::ContainerSnapshot) -> String {
+    if container.memory_limit_bytes == 0 {
+        bytes(container.memory_used_bytes)
+    } else {
+        format!(
+            "{} / {}",
+            bytes(container.memory_used_bytes),
+            bytes(container.memory_limit_bytes)
+        )
+    }
+}
+
+fn container_style(state: &str) -> Style {
+    Style::default().fg(if state == "running" { GREEN } else { ORANGE })
+}
+
+fn render_monitor_empty(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    detail: &str,
+    color: Color,
+) {
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(title, Style::default().fg(color).bold()),
+            Line::from(""),
+            Line::styled(detail, Style::default().fg(Color::Gray)),
+        ])
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true }),
+        vertically_centered(area, 3),
+    );
+}
+
 fn render_monitor_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let sections = [
         ("Overview", AMBER),
@@ -2727,13 +3174,26 @@ fn render_cpu_history(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
         .border_style(Style::default().fg(AMBER));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(7), Constraint::Min(1)])
+        .split(inner);
+    let span = columns[0].height.saturating_sub(1);
+    let cpu_labels = [
+        (0, "100%".to_owned()),
+        (span / 4, "75%".to_owned()),
+        (span / 2, "50%".to_owned()),
+        (span * 3 / 4, "25%".to_owned()),
+        (span, "0%".to_owned()),
+    ];
+    render_y_axis(frame, columns[0], &cpu_labels, AMBER);
     let data: Vec<_> = host.cpu_history.iter().copied().collect();
     if data.is_empty() {
         frame.render_widget(
             Paragraph::new("Waiting for the first CPU samples")
                 .style(Style::default().fg(DIM))
                 .alignment(Alignment::Center),
-            inner,
+            columns[1],
         );
     } else {
         frame.render_widget(
@@ -2741,7 +3201,7 @@ fn render_cpu_history(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
                 .data(&data)
                 .max(100)
                 .style(Style::default().fg(AMBER)),
-            inner,
+            columns[1],
         );
     }
 }
@@ -2783,18 +3243,66 @@ fn render_network_history(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
         );
         return;
     }
+    render_network_lane(frame, rows[0], &rx, "↓", CYAN);
+    render_network_lane(frame, rows[1], &tx, "↑", GREEN);
+}
+
+fn render_network_lane(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    data: &[u64],
+    direction: &str,
+    color: Color,
+) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(11), Constraint::Min(1)])
+        .split(area);
+    let maximum = chart_ceiling(data.iter().copied().max().unwrap_or_default());
+    let span = columns[0].height.saturating_sub(1);
+    let labels = [
+        (0, format!("{direction}{}", bytes(maximum))),
+        (span, "0".to_owned()),
+    ];
+    render_y_axis(frame, columns[0], &labels, color);
     frame.render_widget(
         Sparkline::default()
-            .data(&rx)
-            .style(Style::default().fg(CYAN)),
-        rows[0],
+            .data(data)
+            .max(maximum)
+            .style(Style::default().fg(color)),
+        columns[1],
     );
+}
+
+fn render_y_axis(frame: &mut Frame<'_>, area: Rect, labels: &[(u16, String)], color: Color) {
+    if area.width < 2 || area.height == 0 {
+        return;
+    }
+    let guide = format!("{}│", " ".repeat(usize::from(area.width.saturating_sub(1))));
     frame.render_widget(
-        Sparkline::default()
-            .data(&tx)
-            .style(Style::default().fg(GREEN)),
-        rows[1],
+        Paragraph::new(
+            (0..area.height)
+                .map(|_| Line::styled(guide.clone(), Style::default().fg(LINE)))
+                .collect::<Vec<_>>(),
+        ),
+        area,
     );
+    let label_width = usize::from(area.width.saturating_sub(2));
+    for (offset, label) in labels {
+        frame.render_widget(
+            Paragraph::new(format!("{label:>label_width$} ┤")).style(Style::default().fg(color)),
+            Rect::new(
+                area.x,
+                area.y + (*offset).min(area.height - 1),
+                area.width,
+                1,
+            ),
+        );
+    }
+}
+
+fn chart_ceiling(value: u64) -> u64 {
+    value.max(1).checked_next_power_of_two().unwrap_or(u64::MAX)
 }
 
 fn render_resource_panel(
@@ -3030,7 +3538,11 @@ fn render_terminal_password(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Style::default().fg(TEXT).bold(),
             ),
             Line::styled(
-                "Leave empty when your SSH key already works.",
+                if app.terminal.password_is_saved() {
+                    "Saved password loaded. Backspace to replace it."
+                } else {
+                    "Leave empty when your SSH key already works."
+                },
                 Style::default().fg(DIM),
             ),
             Line::from(""),
@@ -3039,6 +3551,77 @@ fn render_terminal_password(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ]),
         prompt_inner,
     );
+}
+
+fn render_terminal_password_save(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.saturating_sub(4).clamp(30, 66).min(area.width);
+    let height = 11_u16.min(area.height);
+    let prompt = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, prompt);
+    let block = Block::default()
+        .title(" SAVE SSH PASSWORD? ")
+        .title_bottom(Line::from(" ←→ choose  ·  Enter confirm  ·  Esc back ").centered())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(AMBER))
+        .style(canvas_style(app));
+    let inner = block.inner(prompt);
+    frame.render_widget(block, prompt);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(3),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                format!("Remember the password for {}?", app.terminal.target),
+                Style::default().fg(TEXT).bold(),
+            ),
+            Line::from(""),
+            Line::styled(
+                "It will be reused automatically on future terminal connections.",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::styled(
+                "You can remove it later in Settings > Passwords & keys.",
+                Style::default().fg(DIM),
+            ),
+        ])
+        .alignment(Alignment::Center),
+        rows[0],
+    );
+    let buttons = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(rows[1]);
+    for (index, label) in ["Yes, save", "No, only this time"].iter().enumerate() {
+        let selected = app.terminal_save_selected == index;
+        frame.render_widget(
+            Paragraph::new(*label)
+                .alignment(Alignment::Center)
+                .style(if selected {
+                    Style::default().fg(INK).bg(AMBER).bold()
+                } else {
+                    Style::default().fg(Color::Gray)
+                })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(if selected { AMBER } else { LINE })),
+                ),
+            buttons[index],
+        );
+    }
 }
 
 fn render_terminal_boot(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -3904,9 +4487,13 @@ mod tests {
     fn formats_sizes() {
         assert_eq!(bytes(1024), "1.0KiB");
         assert_eq!(bytes(0), "0B");
+        assert_eq!(chart_ceiling(0), 1);
+        assert_eq!(chart_ceiling(65), 128);
+        assert_eq!(chart_ceiling(1024), 1024);
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn render_smoke_test_at_compact_and_wide_sizes() {
         use ratatui::{Terminal, backend::TestBackend};
 
@@ -3950,6 +4537,13 @@ mod tests {
             app.begin_theme_import();
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.cancel_theme_import();
+            app.open_settings();
+            app.settings_selected = 2;
+            app.enter_settings_content();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.begin_credential_key_edit();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.cancel_credential_key_edit();
             app.open_remote_picker();
             app.remote_selected = 0;
             app.begin_machine_alias();
@@ -3982,11 +4576,59 @@ mod tests {
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.cancel_remote_uninstall();
             app.start_monitoring(nekohub_core::HostTarget::from_alias("local"));
+            app.apply_snapshot(nekohub_core::HostSnapshot {
+                host_id: "local".into(),
+                collected_at: std::time::SystemTime::now(),
+                latency_ms: 2,
+                hostname: "demo".into(),
+                os: "Linux".into(),
+                kernel: "6.x".into(),
+                uptime_secs: 300,
+                cpu_percent: Some(30.0),
+                memory: nekohub_core::Usage {
+                    used: 40,
+                    total: 100,
+                },
+                root_disk: nekohub_core::Usage {
+                    used: 25,
+                    total: 100,
+                },
+                load: [0.2, 0.3, 0.4],
+                network: nekohub_core::Throughput::default(),
+                processes: vec![nekohub_core::ProcessSnapshot {
+                    pid: 42,
+                    name: "worker".into(),
+                    command: "worker --serve".into(),
+                    state: "R".into(),
+                    cpu_percent: 12.5,
+                    memory_bytes: 64 * 1024 * 1024,
+                }],
+                containers: vec![nekohub_core::ContainerSnapshot {
+                    id: "abc123".into(),
+                    name: "api".into(),
+                    engine: "docker".into(),
+                    state: "running".into(),
+                    cpu_percent: 8.0,
+                    memory_used_bytes: 128 * 1024 * 1024,
+                    memory_limit_bytes: 512 * 1024 * 1024,
+                    network_rx_bytes: 1024,
+                    network_tx_bytes: 2048,
+                    block_read_bytes: 4096,
+                    block_write_bytes: 8192,
+                    pids: 7,
+                }],
+            });
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.monitor_selected = 1;
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.monitor_selected = 5;
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.monitor_selected = 7;
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.begin_terminal_password();
             app.push_terminal_password_character('x');
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.begin_terminal_password_save();
             terminal.draw(|frame| render(frame, &app)).unwrap();
             let request = app.start_terminal(
                 height.saturating_sub(16).max(2),

@@ -7,5 +7,5 @@ pub mod sample;
 
 pub use collector::{CollectError, Collector};
 pub use inventory::{Inventory, InventoryError};
-pub use model::{HostSnapshot, HostTarget, Throughput, Usage};
-pub use sample::{RateTracker, RawHostSample};
+pub use model::{ContainerSnapshot, HostSnapshot, HostTarget, ProcessSnapshot, Throughput, Usage};
+pub use sample::{RateTracker, RawHostSample, RawProcessSample};

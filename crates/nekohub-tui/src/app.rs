@@ -1,8 +1,12 @@
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{BTreeMap, HashMap, VecDeque},
+    path::PathBuf,
+};
 
 use nekohub_core::{HostSnapshot, HostTarget};
 
 use crate::{
+    credentials::CredentialStore,
     groups::MachineGroup,
     machines::{CUSTOM_ALIAS_TAG, INSTALLED_TAG},
     preferences::{CustomTheme, FontProfile, Theme},
@@ -26,9 +30,11 @@ pub enum View {
     RemoteInstallProgress,
     Settings,
     ThemeImport,
+    CredentialKeyEdit,
     Overview,
     Detail,
     TerminalPassword,
+    TerminalSavePassword,
     Terminal,
 }
 
@@ -97,6 +103,10 @@ pub struct App {
     pub settings_selected: usize,
     pub settings_focus: SettingsFocus,
     pub settings_item_selected: usize,
+    pub credentials: CredentialStore,
+    pub credential_key_draft: String,
+    pub credential_key_error: Option<String>,
+    pub terminal_save_selected: usize,
     pub monitor_selected: usize,
     pub terminal: TerminalPanel,
     pub navigation_motion: Option<NavigationMotion>,
@@ -157,6 +167,10 @@ impl App {
             settings_selected: 0,
             settings_focus: SettingsFocus::Sidebar,
             settings_item_selected: 0,
+            credentials: CredentialStore::default(),
+            credential_key_draft: String::new(),
+            credential_key_error: None,
+            terminal_save_selected: 1,
             monitor_selected: 0,
             terminal: TerminalPanel::default(),
             navigation_motion: None,
@@ -223,6 +237,10 @@ impl App {
             settings_selected: 0,
             settings_focus: SettingsFocus::Sidebar,
             settings_item_selected: 0,
+            credentials: CredentialStore::default(),
+            credential_key_draft: String::new(),
+            credential_key_error: None,
+            terminal_save_selected: 1,
             monitor_selected: 0,
             terminal: TerminalPanel::default(),
             navigation_motion: None,
@@ -674,7 +692,7 @@ impl App {
 
     pub fn next_setting(&mut self) {
         if self.settings_focus == SettingsFocus::Sidebar {
-            self.settings_selected = (self.settings_selected + 1) % 5;
+            self.settings_selected = (self.settings_selected + 1) % 6;
         } else {
             self.settings_item_selected =
                 (self.settings_item_selected + 1) % self.settings_item_count();
@@ -684,7 +702,7 @@ impl App {
 
     pub fn previous_setting(&mut self) {
         if self.settings_focus == SettingsFocus::Sidebar {
-            self.settings_selected = self.settings_selected.checked_sub(1).unwrap_or(4);
+            self.settings_selected = self.settings_selected.checked_sub(1).unwrap_or(5);
         } else {
             self.settings_item_selected = self
                 .settings_item_selected
@@ -715,8 +733,110 @@ impl App {
         match self.settings_selected {
             0 => 2,
             1 => 5,
+            2 => self.credential_machines().len().max(1),
             _ => 1,
         }
+    }
+
+    pub fn credential_machines(&self) -> Vec<(String, String)> {
+        let mut machines = BTreeMap::new();
+        for host in self
+            .remote_hosts
+            .iter()
+            .chain(self.hosts.iter().map(|host| &host.target))
+        {
+            if host.id != "local" {
+                machines.insert(host.alias.clone(), host.display_name.clone());
+            }
+        }
+        for alias in self.credentials.aliases() {
+            machines
+                .entry(alias.to_owned())
+                .or_insert_with(|| alias.to_owned());
+        }
+        machines.into_iter().collect()
+    }
+
+    pub fn selected_credential_alias(&self) -> Option<String> {
+        self.credential_machines()
+            .get(self.settings_item_selected)
+            .map(|(alias, _)| alias.clone())
+    }
+
+    pub fn begin_credential_key_edit(&mut self) {
+        let Some(alias) = self.selected_credential_alias() else {
+            self.settings_notice = Some("No SSH machine is available yet.".into());
+            return;
+        };
+        self.credential_key_draft = self
+            .credentials
+            .get(&alias)
+            .and_then(|credential| credential.identity_file.as_ref())
+            .map_or_else(String::new, |path| path.display().to_string());
+        self.credential_key_error = None;
+        self.view = View::CredentialKeyEdit;
+    }
+
+    pub fn push_credential_key_character(&mut self, character: char) {
+        if self.credential_key_draft.chars().count() < 512 && !character.is_control() {
+            self.credential_key_draft.push(character);
+            self.credential_key_error = None;
+        }
+    }
+
+    pub fn pop_credential_key_character(&mut self) {
+        self.credential_key_draft.pop();
+        self.credential_key_error = None;
+    }
+
+    pub fn save_credential_key(&mut self) -> Result<(), String> {
+        let alias = self
+            .selected_credential_alias()
+            .ok_or_else(|| "No SSH machine is selected.".to_owned())?;
+        let draft = self.credential_key_draft.trim();
+        if draft.is_empty() {
+            return Err("Enter the path to a private SSH key.".into());
+        }
+        let path = expand_home_path(draft);
+        if !path.is_file() {
+            return Err("The selected private key file does not exist.".into());
+        }
+        self.credentials.save_identity_file(&alias, path);
+        self.credential_key_draft.clear();
+        self.credential_key_error = None;
+        self.settings_notice = Some(format!("SSH key saved for {alias}."));
+        self.view = View::Settings;
+        Ok(())
+    }
+
+    pub fn cancel_credential_key_edit(&mut self) {
+        self.credential_key_draft.clear();
+        self.credential_key_error = None;
+        self.view = View::Settings;
+    }
+
+    pub fn remove_selected_password(&mut self) {
+        let Some(alias) = self.selected_credential_alias() else {
+            return;
+        };
+        let removed = self.credentials.remove_password(&alias);
+        self.settings_notice = Some(if removed {
+            format!("Saved password removed from {alias}.")
+        } else {
+            format!("{alias} has no saved password.")
+        });
+    }
+
+    pub fn remove_selected_identity_file(&mut self) {
+        let Some(alias) = self.selected_credential_alias() else {
+            return;
+        };
+        let removed = self.credentials.remove_identity_file(&alias);
+        self.settings_notice = Some(if removed {
+            format!("SSH key removed from {alias}.")
+        } else {
+            format!("{alias} has no managed SSH key.")
+        });
     }
 
     pub fn toggle_background(&mut self) {
@@ -1127,7 +1247,12 @@ impl App {
         let Some(target) = self.selected().map(|host| host.target.alias.clone()) else {
             return;
         };
-        self.terminal.begin_password(&target);
+        let credential = self.credentials.get(&target);
+        self.terminal.begin_password(
+            &target,
+            credential.and_then(|credential| credential.password.as_deref()),
+            credential.and_then(|credential| credential.identity_file.clone()),
+        );
         self.view = View::TerminalPassword;
     }
 
@@ -1142,6 +1267,27 @@ impl App {
     pub fn start_terminal(&mut self, rows: u16, cols: u16) -> TerminalRequest {
         self.view = View::Terminal;
         self.terminal.start(rows, cols, self.animation_tick)
+    }
+
+    pub fn should_confirm_terminal_password_save(&self) -> bool {
+        !self.terminal.password.is_empty() && !self.terminal.password_is_saved()
+    }
+
+    pub fn begin_terminal_password_save(&mut self) {
+        self.terminal_save_selected = 1;
+        self.view = View::TerminalSavePassword;
+    }
+
+    pub fn toggle_terminal_password_save(&mut self) {
+        self.terminal_save_selected = 1 - self.terminal_save_selected;
+    }
+
+    pub fn save_terminal_password(&mut self) {
+        if self.terminal_save_selected == 0 && !self.terminal.password.is_empty() {
+            self.credentials
+                .save_password(&self.terminal.target, self.terminal.password.clone());
+            self.terminal.mark_password_saved();
+        }
     }
 
     pub fn close_terminal(&mut self) {
@@ -1172,10 +1318,20 @@ fn shell_navigation_index(view: View) -> Option<usize> {
         | View::Overview
         | View::Detail
         | View::TerminalPassword
+        | View::TerminalSavePassword
         | View::Terminal => Some(1),
-        View::Settings | View::ThemeImport => Some(2),
+        View::Settings | View::ThemeImport | View::CredentialKeyEdit => Some(2),
         View::Welcome | View::AgentConfirm | View::AgentSetup => None,
     }
+}
+
+fn expand_home_path(value: &str) -> PathBuf {
+    if let Some(relative) = value.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(relative);
+    }
+    PathBuf::from(value)
 }
 
 pub fn local_machine_name() -> String {
@@ -1442,5 +1598,19 @@ mod tests {
         app.next_font_profile();
         assert_eq!(app.theme, Theme::Blue);
         assert_eq!(app.font_profile, FontProfile::Compact);
+    }
+
+    #[test]
+    fn saved_terminal_password_is_reused_without_a_second_save_prompt() {
+        let mut app = App::monitoring(vec![HostTarget::from_alias("edge-01")]);
+        app.credentials
+            .save_password("edge-01", "saved-secret".into());
+
+        app.begin_terminal_password();
+
+        assert!(app.terminal.password_is_saved());
+        assert!(!app.should_confirm_terminal_password_save());
+        let request = app.start_terminal(24, 80);
+        assert_eq!(request.password.as_deref(), Some("saved-secret"));
     }
 }

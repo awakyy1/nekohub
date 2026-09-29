@@ -99,8 +99,13 @@ async fn collect_loop(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         ticker.tick().await;
-        match collector.collect("local") {
-            Ok(sample) => {
+        let collection = tokio::task::spawn_blocking({
+            let collector = collector.clone();
+            move || collector.collect("local")
+        })
+        .await;
+        match collection {
+            Ok(Ok(sample)) => {
                 let snapshot = tracker.apply(sample.clone());
                 let mut current = state.write().await;
                 current.sequence = current.sequence.wrapping_add(1);
@@ -114,7 +119,8 @@ async fn collect_loop(
                 drop(current);
                 let _ = samples.send((sequence, sample));
             }
-            Err(error) => eprintln!("collection failed: {error}"),
+            Ok(Err(error)) => eprintln!("collection failed: {error}"),
+            Err(error) => eprintln!("collection task failed: {error}"),
         }
     }
 }
