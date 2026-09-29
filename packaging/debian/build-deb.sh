@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="${NEKOHUB_VERSION:-0.15.1}"
+version="${NEKOHUB_VERSION:-0.15.2}"
 architecture="${NEKOHUB_ARCHITECTURE:-amd64}"
 binary="${NEKOHUB_BINARY:-target/release/nekohub}"
 agent_binary="${NEKOHUB_AGENT_BINARY:-target/release/nekohub-agent}"

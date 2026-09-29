@@ -1165,14 +1165,42 @@ if ! run_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get inst
   fi
   echo 'apt returned an error after installing the current agent; continuing after version verification.'
 fi
+progress 68 'Checking container runtime access'
 if getent group docker >/dev/null 2>&1 && ! id -nG nekohub-agent | grep -qw docker; then
-  run_root usermod -aG docker nekohub-agent
+  if ! run_root usermod -aG docker nekohub-agent; then
+    echo 'Could not grant the agent access to the Docker group.' >&2
+    exit 1
+  fi
 fi
-progress 82 'Restarting metrics service'
-run_root systemctl restart nekohub-agent.service
-run_root systemctl is-active --quiet nekohub-agent.service
+progress 78 'Container runtime access checked'
+progress 82 'Checking metrics service'
+if ! run_root systemctl is-active --quiet nekohub-agent.service || [ ! -S /run/nekohub/agent.sock ]; then
+  progress 86 'Starting metrics service'
+  if ! run_root systemctl restart nekohub-agent.service; then
+    echo 'systemd could not restart nekohub-agent.service; collecting service diagnostics.' >&2
+    run_root systemctl status --no-pager --full nekohub-agent.service >&2 || true
+    run_root journalctl -u nekohub-agent.service -n 30 --no-pager >&2 || true
+    exit 1
+  fi
+fi
+if ! run_root systemctl is-active --quiet nekohub-agent.service; then
+  echo 'nekohub-agent.service is not active after package installation.' >&2
+  run_root systemctl status --no-pager --full nekohub-agent.service >&2 || true
+  run_root journalctl -u nekohub-agent.service -n 30 --no-pager >&2 || true
+  exit 1
+fi
 progress 96 'Waiting for the new metrics stream'
-test -S /run/nekohub/agent.sock
+attempt=0
+while [ ! -S /run/nekohub/agent.sock ] && [ "$attempt" -lt 20 ]; do
+  attempt=$((attempt + 1))
+  sleep 0.5
+done
+if [ ! -S /run/nekohub/agent.sock ]; then
+  echo 'nekohub-agent.service is active but its metrics socket did not appear.' >&2
+  run_root systemctl status --no-pager --full nekohub-agent.service >&2 || true
+  run_root journalctl -u nekohub-agent.service -n 30 --no-pager >&2 || true
+  exit 1
+fi
 installed=$(dpkg-query -W -f='${Version}' nekohub-agent)
 printf 'NEKOHUB_AGENT_VERSION:%s\n' "$installed"
 echo 'nekoHub agent update complete.'"#;
@@ -1265,7 +1293,12 @@ async fn run_remote_command(
     if status.success() {
         Ok(())
     } else {
-        Err("SSH operation failed. Check the live output, credentials, and sudo access.".into())
+        Err(format!(
+            "SSH operation failed with exit status {}. See the output above for the failing command.",
+            status
+                .code()
+                .map_or_else(|| "signal".to_owned(), |code| code.to_string())
+        ))
     }
 }
 
