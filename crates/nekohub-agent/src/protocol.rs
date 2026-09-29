@@ -1,12 +1,13 @@
-use nekohub_core::{HostSnapshot, RawHostSample};
+use nekohub_core::{HostSnapshot, RawHostSample, StorageSnapshot};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "request", rename_all = "snake_case")]
 pub enum AgentRequest {
     Snapshot,
+    Storage,
     History { limit: Option<usize> },
     Stream,
 }
@@ -22,6 +23,10 @@ pub enum AgentResponse {
     History {
         protocol: u16,
         snapshots: Vec<HostSnapshot>,
+    },
+    Storage {
+        protocol: u16,
+        snapshot: Box<StorageSnapshot>,
     },
     Error {
         protocol: u16,

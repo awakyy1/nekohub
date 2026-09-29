@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
 };
 
-use nekohub_core::{HostSnapshot, HostTarget};
+use nekohub_core::{HostSnapshot, HostTarget, StorageSnapshot};
 
 use crate::{
     credentials::CredentialStore,
@@ -113,6 +113,11 @@ pub struct App {
     pub terminal_save_selected: usize,
     pub agent_update_quote_tick: Option<u64>,
     pub monitor_selected: usize,
+    pub storage_snapshot: Option<StorageSnapshot>,
+    pub storage_loading: bool,
+    pub storage_error: Option<String>,
+    pub storage_host_id: Option<String>,
+    pub storage_hovered: Option<usize>,
     pub terminal: TerminalPanel,
     pub navigation_motion: Option<NavigationMotion>,
     pub background_enabled: bool,
@@ -178,6 +183,11 @@ impl App {
             terminal_save_selected: 1,
             agent_update_quote_tick: None,
             monitor_selected: 0,
+            storage_snapshot: None,
+            storage_loading: false,
+            storage_error: None,
+            storage_host_id: None,
+            storage_hovered: None,
             terminal: TerminalPanel::default(),
             navigation_motion: None,
             background_enabled: true,
@@ -249,6 +259,11 @@ impl App {
             terminal_save_selected: 1,
             agent_update_quote_tick: None,
             monitor_selected: 0,
+            storage_snapshot: None,
+            storage_loading: false,
+            storage_error: None,
+            storage_host_id: None,
+            storage_hovered: None,
             terminal: TerminalPanel::default(),
             navigation_motion: None,
             background_enabled: true,
@@ -303,6 +318,11 @@ impl App {
         self.hosts = vec![HostState::new(target)];
         self.selected = 0;
         self.monitor_selected = 0;
+        self.storage_snapshot = None;
+        self.storage_loading = false;
+        self.storage_error = None;
+        self.storage_host_id = None;
+        self.storage_hovered = None;
         self.by_id = self
             .hosts
             .iter()
@@ -1267,10 +1287,55 @@ impl App {
 
     pub fn next_monitor_section(&mut self) {
         self.monitor_selected = (self.monitor_selected + 1) % 8;
+        if self.monitor_selected != 3 {
+            self.storage_hovered = None;
+        }
     }
 
     pub fn previous_monitor_section(&mut self) {
         self.monitor_selected = self.monitor_selected.checked_sub(1).unwrap_or(7);
+        if self.monitor_selected != 3 {
+            self.storage_hovered = None;
+        }
+    }
+
+    pub fn select_monitor_section(&mut self, index: usize) {
+        self.monitor_selected = index.min(7);
+        if self.monitor_selected != 3 {
+            self.storage_hovered = None;
+        }
+    }
+
+    pub fn begin_storage_scan(&mut self, host_id: &str, force: bool) -> bool {
+        if self.storage_loading {
+            return false;
+        }
+        if !force
+            && self.storage_host_id.as_deref() == Some(host_id)
+            && self.storage_snapshot.is_some()
+        {
+            return false;
+        }
+        self.storage_loading = true;
+        self.storage_error = None;
+        self.storage_hovered = None;
+        self.storage_host_id = Some(host_id.to_owned());
+        true
+    }
+
+    pub fn complete_storage_scan(&mut self, host_id: &str, snapshot: StorageSnapshot) {
+        if self.storage_host_id.as_deref() == Some(host_id) {
+            self.storage_snapshot = Some(snapshot);
+            self.storage_loading = false;
+            self.storage_error = None;
+        }
+    }
+
+    pub fn fail_storage_scan(&mut self, host_id: &str, message: String) {
+        if self.storage_host_id.as_deref() == Some(host_id) {
+            self.storage_loading = false;
+            self.storage_error = Some(message);
+        }
     }
 
     pub fn selected_agent_needs_update(&self) -> bool {

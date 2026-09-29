@@ -38,6 +38,15 @@ const LINE: Color = Color::Rgb(43, 56, 51);
 const TEXT: Color = Color::Rgb(215, 224, 219);
 
 pub fn mouse_key(app: &mut App, area: Rect, event: MouseEvent) -> Option<KeyEvent> {
+    if event.kind == MouseEventKind::Moved && app.view == View::Overview {
+        let hovered = if app.monitor_selected == 3 {
+            storage_entry_at(area, app, event.column, event.row)
+        } else {
+            None
+        };
+        app.storage_hovered = hovered;
+        return None;
+    }
     match event.kind {
         MouseEventKind::ScrollUp => return Some(mouse_key_event(KeyCode::Up)),
         MouseEventKind::ScrollDown => return Some(mouse_key_event(KeyCode::Down)),
@@ -298,7 +307,7 @@ fn monitoring_mouse_key(app: &mut App, area: Rect, x: u16, y: u16) -> Option<Key
     if x < content.x.saturating_add(29) && y >= body_y.saturating_add(5) {
         let index = usize::from((y - body_y - 5) / 3);
         if index < 8 {
-            app.monitor_selected = index;
+            app.select_monitor_section(index);
             return Some(mouse_key_event(KeyCode::Enter));
         }
     }
@@ -3129,6 +3138,10 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
         render_containers(frame, animated_area(columns[2], app, 2, 4), host);
         return;
     }
+    if app.monitor_selected == 3 {
+        render_storage_view(frame, animated_area(columns[2], app, 2, 4), app, host);
+        return;
+    }
     if app.monitor_selected != 0 {
         render_monitor_placeholder(frame, animated_area(columns[2], app, 2, 4), app, host);
         return;
@@ -3527,6 +3540,384 @@ fn render_monitor_empty(
         .wrap(Wrap { trim: true }),
         vertically_centered(area, 3),
     );
+}
+
+#[allow(clippy::too_many_lines)]
+fn render_storage_view(frame: &mut Frame<'_>, area: Rect, app: &App, host: &HostState) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(1),
+            Constraint::Min(12),
+        ])
+        .split(area);
+    let hostname = host
+        .snapshot
+        .as_ref()
+        .map_or(host.target.display_name.as_str(), |snapshot| {
+            snapshot.hostname.as_str()
+        });
+    let summary = app.storage_snapshot.as_ref().map_or_else(
+        || "Waiting for storage inventory".into(),
+        |storage| {
+            format!(
+                "{} used of {}  ·  {} files  ·  scanned in {}ms",
+                bytes(storage.used_bytes),
+                bytes(storage.total_bytes),
+                storage.file_count,
+                storage.elapsed_ms
+            )
+        },
+    );
+    let ratio = app
+        .storage_snapshot
+        .as_ref()
+        .filter(|storage| storage.total_bytes > 0)
+        .map_or(0.0, |storage| {
+            storage.used_bytes as f64 / storage.total_bytes as f64
+        })
+        .clamp(0.0, 1.0);
+    let header = Block::default()
+        .title(Line::from(vec![
+            Span::styled(" STORAGE MAP  ", Style::default().fg(ORANGE).bold()),
+            Span::styled(hostname, Style::default().fg(TEXT).bold()),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ORANGE));
+    let header_inner = header.inner(rows[0]);
+    frame.render_widget(header, rows[0]);
+    let header_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(header_inner);
+    frame.render_widget(
+        Paragraph::new(summary).style(Style::default().fg(Color::Gray)),
+        header_rows[0],
+    );
+    frame.render_widget(
+        Gauge::default()
+            .ratio(ratio)
+            .label(format!("{:.0}%", ratio * 100.0))
+            .gauge_style(Style::default().fg(ORANGE).bg(SURFACE)),
+        header_rows[1],
+    );
+
+    if app.storage_loading && app.storage_snapshot.is_none() {
+        let dots = ".".repeat(usize::try_from(app.animation_tick / 5 % 4).unwrap_or_default());
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled(" /\\_/\\", Style::default().fg(ORANGE).bold()),
+                Line::styled(
+                    "( o.o )  walking the filesystem",
+                    Style::default().fg(TEXT).bold(),
+                ),
+                Line::styled(format!(" > ^ <{dots}"), Style::default().fg(DIM)),
+                Line::from(""),
+                Line::styled(
+                    "Read-only scan · symlinks and mounted filesystems are skipped",
+                    Style::default().fg(DIM),
+                ),
+            ])
+            .alignment(Alignment::Center)
+            .block(
+                Block::default()
+                    .title(" BUILDING MAP ")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(ORANGE)),
+            ),
+            rows[2],
+        );
+        return;
+    }
+    if let Some(error) = app.storage_error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::styled(
+                    "The storage map could not be built.",
+                    Style::default().fg(RED).bold(),
+                ),
+                Line::from(""),
+                Line::styled(error, Style::default().fg(Color::Gray)),
+                Line::from(""),
+                Line::styled("Press r to scan again.", Style::default().fg(ORANGE)),
+            ])
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .title(" STORAGE SCAN ")
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(RED)),
+            ),
+            rows[2],
+        );
+        return;
+    }
+    let Some(storage) = app.storage_snapshot.as_ref() else {
+        return;
+    };
+    let columns = storage_columns(rows[2]);
+    let map_block = Block::default()
+        .title(Line::styled(
+            " WHAT IS USING SPACE ",
+            Style::default().fg(DIM).bold(),
+        ))
+        .title_bottom(Line::styled(
+            if app.storage_loading {
+                " rescanning… "
+            } else {
+                " hover a block · r rescan "
+            },
+            Style::default().fg(if app.storage_loading { ORANGE } else { DIM }),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(LINE));
+    let map_area = map_block.inner(columns[0]);
+    frame.render_widget(map_block, columns[0]);
+    let palette = [
+        ORANGE,
+        CYAN,
+        GREEN,
+        Color::Rgb(164, 143, 214),
+        RED,
+        AMBER,
+        Color::Rgb(194, 139, 177),
+    ];
+    for (position, rectangle) in storage_treemap(&storage.entries, map_area) {
+        let entry = &storage.entries[position];
+        let hovered = app.storage_hovered == Some(position);
+        let color = palette[position % palette.len()];
+        let mut lines = Vec::new();
+        if rectangle.width >= 9 && rectangle.height >= 3 {
+            lines.push(Line::styled(
+                clipped(&entry.name, usize::from(rectangle.width.saturating_sub(2))),
+                Style::default().fg(INK).bold(),
+            ));
+        }
+        if rectangle.width >= 12 && rectangle.height >= 4 {
+            lines.push(Line::styled(
+                bytes(entry.allocated_bytes),
+                Style::default().fg(INK),
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(lines)
+                .style(Style::default().bg(color))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(if hovered {
+                            BorderType::Double
+                        } else {
+                            BorderType::Plain
+                        })
+                        .border_style(Style::default().fg(if hovered { TEXT } else { SURFACE })),
+                ),
+            rectangle,
+        );
+    }
+    render_storage_details(frame, columns[2], app, storage);
+}
+
+fn render_storage_details(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    storage: &nekohub_core::StorageSnapshot,
+) {
+    let entry = app
+        .storage_hovered
+        .and_then(|index| storage.entries.get(index))
+        .or_else(|| storage.entries.first());
+    let mut lines = entry.map_or_else(
+        || {
+            vec![Line::styled(
+                "No readable entries",
+                Style::default().fg(DIM),
+            )]
+        },
+        |entry| {
+            let percent = if storage.scanned_bytes == 0 {
+                0.0
+            } else {
+                entry.allocated_bytes as f64 / storage.scanned_bytes as f64 * 100.0
+            };
+            vec![
+                Line::styled(entry.name.as_str(), Style::default().fg(TEXT).bold()),
+                Line::from(""),
+                Line::styled("FULL PATH", Style::default().fg(DIM).bold()),
+                Line::styled(entry.path.as_str(), Style::default().fg(Color::Gray)),
+                Line::from(""),
+                storage_detail_line("SIZE", bytes(entry.allocated_bytes), ORANGE),
+                storage_detail_line("SHARE", format!("{percent:.1}%"), CYAN),
+                storage_detail_line("FILES", entry.file_count.to_string(), TEXT),
+                storage_detail_line(
+                    "TYPE",
+                    if entry.is_directory {
+                        "directory"
+                    } else {
+                        "file"
+                    }
+                    .into(),
+                    GREEN,
+                ),
+            ]
+        },
+    );
+    if storage.unreadable_entries > 0 || storage.truncated {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!(
+                "{} unreadable{}",
+                storage.unreadable_entries,
+                if storage.truncated {
+                    " · scan limit reached"
+                } else {
+                    ""
+                }
+            ),
+            Style::default().fg(ORANGE),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .title(" INSPECTOR ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(ORANGE)),
+        ),
+        area,
+    );
+}
+
+fn storage_detail_line(label: &'static str, value: String, color: Color) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<7}"), Style::default().fg(DIM)),
+        Span::styled(value, Style::default().fg(color).bold()),
+    ])
+}
+
+fn storage_columns(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(72),
+            Constraint::Length(1),
+            Constraint::Percentage(28),
+        ])
+        .split(area)
+}
+
+fn storage_treemap(entries: &[nekohub_core::StorageEntry], area: Rect) -> Vec<(usize, Rect)> {
+    let items = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.allocated_bytes > 0)
+        .map(|(index, entry)| (index, entry.allocated_bytes))
+        .collect::<Vec<_>>();
+    let mut output = Vec::new();
+    split_treemap(&items, area, &mut output);
+    output
+}
+
+fn split_treemap(items: &[(usize, u64)], area: Rect, output: &mut Vec<(usize, Rect)>) {
+    if items.is_empty() || area.width == 0 || area.height == 0 {
+        return;
+    }
+    if items.len() == 1 || area.width < 4 || area.height < 3 {
+        output.push((items[0].0, area));
+        return;
+    }
+    let total = items.iter().map(|(_, size)| size).sum::<u64>().max(1);
+    let mut first_total = 0_u64;
+    let split = items
+        .iter()
+        .take(items.len() - 1)
+        .position(|(_, size)| {
+            first_total = first_total.saturating_add(*size);
+            first_total >= total / 2
+        })
+        .map_or(items.len() / 2, |position| position + 1)
+        .max(1);
+    first_total = items[..split].iter().map(|(_, size)| size).sum();
+    if area.width.saturating_mul(2) >= area.height {
+        let extent = proportional_extent(area.width, first_total, total);
+        split_treemap(
+            &items[..split],
+            Rect::new(area.x, area.y, extent, area.height),
+            output,
+        );
+        split_treemap(
+            &items[split..],
+            Rect::new(
+                area.x + extent,
+                area.y,
+                area.width.saturating_sub(extent),
+                area.height,
+            ),
+            output,
+        );
+    } else {
+        let extent = proportional_extent(area.height, first_total, total);
+        split_treemap(
+            &items[..split],
+            Rect::new(area.x, area.y, area.width, extent),
+            output,
+        );
+        split_treemap(
+            &items[split..],
+            Rect::new(
+                area.x,
+                area.y + extent,
+                area.width,
+                area.height.saturating_sub(extent),
+            ),
+            output,
+        );
+    }
+}
+
+fn proportional_extent(extent: u16, part: u64, total: u64) -> u16 {
+    let value = (u64::from(extent) * part / total)
+        .try_into()
+        .unwrap_or(extent);
+    value.clamp(1, extent.saturating_sub(1).max(1))
+}
+
+fn storage_entry_at(area: Rect, app: &App, x: u16, y: u16) -> Option<usize> {
+    let storage = app.storage_snapshot.as_ref()?;
+    let content = chrome_content(area);
+    let body = Rect::new(
+        content.x + 31,
+        content.y + 3,
+        content.width.saturating_sub(31),
+        content.height.saturating_sub(3),
+    );
+    let storage_area = animated_area(body, app, 2, 4);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(1),
+            Constraint::Min(12),
+        ])
+        .split(storage_area);
+    let map_column = storage_columns(rows[2])[0];
+    let map_area = Block::default().borders(Borders::ALL).inner(map_column);
+    storage_treemap(&storage.entries, map_area)
+        .into_iter()
+        .find_map(|(index, rectangle)| {
+            (x >= rectangle.x
+                && x < rectangle.right()
+                && y >= rectangle.y
+                && y < rectangle.bottom())
+            .then_some(index)
+        })
 }
 
 fn render_monitor_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {

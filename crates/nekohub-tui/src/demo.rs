@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 use async_trait::async_trait;
 use nekohub_core::{
     CollectError, Collector, ContainerSnapshot, HostTarget, RawHostSample, RawProcessSample,
+    StorageEntry, StorageSnapshot,
 };
 
 #[derive(Debug)]
@@ -59,6 +60,40 @@ impl Collector for DemoCollector {
             network_tx_bytes: (elapsed * (18_000.0 + seed as f64 * 700.0)) as u64,
             processes: demo_processes(elapsed, seed),
             containers: demo_containers(wave, seed),
+        })
+    }
+
+    async fn collect_storage(&self, _host: &HostTarget) -> Result<StorageSnapshot, CollectError> {
+        tokio::time::sleep(Duration::from_millis(420)).await;
+        let gib = 1024 * 1024 * 1024;
+        let entries = [
+            ("home", 42, 126_482, true),
+            ("usr", 26, 82_104, true),
+            ("var", 18, 48_291, true),
+            ("opt", 8, 11_804, true),
+            ("swapfile", 6, 1, false),
+            ("boot", 2, 743, true),
+            ("etc", 1, 4_921, true),
+        ]
+        .into_iter()
+        .map(|(name, size, file_count, is_directory)| StorageEntry {
+            name: name.into(),
+            path: format!("/{name}"),
+            allocated_bytes: size * gib,
+            file_count,
+            is_directory,
+        })
+        .collect::<Vec<_>>();
+        Ok(StorageSnapshot {
+            root: "/".into(),
+            total_bytes: 240 * gib,
+            used_bytes: 109 * gib,
+            scanned_bytes: entries.iter().map(|entry| entry.allocated_bytes).sum(),
+            file_count: entries.iter().map(|entry| entry.file_count).sum(),
+            unreadable_entries: 0,
+            truncated: false,
+            elapsed_ms: 420,
+            entries,
         })
     }
 }

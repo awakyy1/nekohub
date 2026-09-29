@@ -4,6 +4,9 @@ use async_trait::async_trait;
 use nekohub_core::{CollectError, Collector, HostTarget, RawHostSample};
 
 #[cfg(unix)]
+use nekohub_core::StorageSnapshot;
+
+#[cfg(unix)]
 use crate::protocol::{AgentRequest, AgentResponse, PROTOCOL_VERSION};
 
 #[derive(Debug, Clone)]
@@ -56,9 +59,12 @@ impl AgentCollector {
 }
 
 #[cfg(unix)]
-#[async_trait]
-impl Collector for AgentCollector {
-    async fn collect(&self, _host: &HostTarget) -> Result<RawHostSample, CollectError> {
+impl AgentCollector {
+    async fn request(
+        &self,
+        request: AgentRequest,
+        timeout: Duration,
+    ) -> Result<AgentResponse, CollectError> {
         use tokio::{
             io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
             net::UnixStream,
@@ -68,7 +74,7 @@ impl Collector for AgentCollector {
             let mut stream = UnixStream::connect(&self.socket_path)
                 .await
                 .map_err(|error| CollectError::Transport(error.to_string()))?;
-            let request = serde_json::to_vec(&AgentRequest::Snapshot)
+            let request = serde_json::to_vec(&request)
                 .map_err(|error| CollectError::Protocol(error.to_string()))?;
             stream
                 .write_all(&request)
@@ -84,18 +90,10 @@ impl Collector for AgentCollector {
                 .read_line(&mut response)
                 .await
                 .map_err(|error| CollectError::Transport(error.to_string()))?;
-            match serde_json::from_str::<AgentResponse>(&response)
-                .map_err(|error| CollectError::Protocol(error.to_string()))?
-            {
-                AgentResponse::Sample {
-                    protocol, sample, ..
-                } if protocol == PROTOCOL_VERSION => Ok(*sample),
-                AgentResponse::Error { message, .. } => Err(CollectError::Remote(message)),
-                _ => Err(CollectError::Protocol("unsupported agent response".into())),
-            }
+            serde_json::from_str(&response)
+                .map_err(|error| CollectError::Protocol(error.to_string()))
         };
-
-        tokio::time::timeout(self.timeout, operation)
+        tokio::time::timeout(timeout, operation)
             .await
             .map_err(|_| CollectError::Timeout)?
     }
@@ -103,8 +101,37 @@ impl Collector for AgentCollector {
 
 #[cfg(unix)]
 #[async_trait]
-impl Collector for SshAgentCollector {
-    async fn collect(&self, host: &HostTarget) -> Result<RawHostSample, CollectError> {
+impl Collector for AgentCollector {
+    async fn collect(&self, _host: &HostTarget) -> Result<RawHostSample, CollectError> {
+        match self.request(AgentRequest::Snapshot, self.timeout).await? {
+            AgentResponse::Sample {
+                protocol, sample, ..
+            } if protocol == PROTOCOL_VERSION => Ok(*sample),
+            AgentResponse::Error { message, .. } => Err(CollectError::Remote(message)),
+            _ => Err(CollectError::Protocol("unsupported agent response".into())),
+        }
+    }
+
+    async fn collect_storage(&self, _host: &HostTarget) -> Result<StorageSnapshot, CollectError> {
+        match self
+            .request(
+                AgentRequest::Storage,
+                self.timeout.max(Duration::from_secs(120)),
+            )
+            .await?
+        {
+            AgentResponse::Storage { protocol, snapshot } if protocol == PROTOCOL_VERSION => {
+                Ok(*snapshot)
+            }
+            AgentResponse::Error { message, .. } => Err(CollectError::Remote(message)),
+            _ => Err(CollectError::Protocol("unsupported agent response".into())),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl SshAgentCollector {
+    async fn ensure_tunnel(&self) -> Result<(), CollectError> {
         use std::process::Stdio;
 
         let mut tunnel = self.tunnel.lock().await;
@@ -115,73 +142,89 @@ impl Collector for SshAgentCollector {
                 .is_none(),
             None => false,
         };
-        if !running {
-            let _ = std::fs::remove_file(&self.socket_path);
-            let mut command = if self.password.is_some() {
-                let mut command = tokio::process::Command::new("sshpass");
-                command.arg("-e").arg("ssh");
-                command
-            } else {
-                tokio::process::Command::new("ssh")
-            };
-            if let Some(password) = self.password.as_deref() {
-                command.env("SSHPASS", password);
-            }
-            let child = command
-                .args([
-                    "-N",
-                    "-T",
-                    "-o",
-                    "ExitOnForwardFailure=yes",
-                    "-o",
-                    "ServerAliveInterval=15",
-                    "-o",
-                    "StrictHostKeyChecking=accept-new",
-                    "-L",
-                ])
-                .arg(format!(
-                    "{}:/run/nekohub/agent.sock",
-                    self.socket_path.display()
-                ))
-                .arg(&self.target)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true)
-                .spawn()
-                .map_err(|error| {
-                    CollectError::Transport(format!("could not start SSH tunnel: {error}"))
-                })?;
-            *tunnel = Some(child);
-            let ready = async {
-                loop {
-                    if self.socket_path.exists() {
-                        return Ok(());
-                    }
-                    if let Some(status) = tunnel
-                        .as_mut()
-                        .expect("tunnel was just started")
-                        .try_wait()
-                        .map_err(|error| CollectError::Transport(error.to_string()))?
-                    {
-                        return Err(CollectError::Transport(format!(
-                            "SSH tunnel closed with {status}; check credentials and remote agent status"
-                        )));
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            };
-            tokio::time::timeout(self.timeout, ready)
-                .await
-                .map_err(|_| CollectError::Timeout)??;
+        if running {
+            return Ok(());
         }
-        drop(tunnel);
+        let _ = std::fs::remove_file(&self.socket_path);
+        let mut command = if self.password.is_some() {
+            let mut command = tokio::process::Command::new("sshpass");
+            command.arg("-e").arg("ssh");
+            command
+        } else {
+            tokio::process::Command::new("ssh")
+        };
+        if let Some(password) = self.password.as_deref() {
+            command.env("SSHPASS", password);
+        }
+        let child = command
+            .args([
+                "-N",
+                "-T",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-L",
+            ])
+            .arg(format!(
+                "{}:/run/nekohub/agent.sock",
+                self.socket_path.display()
+            ))
+            .arg(&self.target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                CollectError::Transport(format!("could not start SSH tunnel: {error}"))
+            })?;
+        *tunnel = Some(child);
+        let ready = async {
+            loop {
+                if self.socket_path.exists() {
+                    return Ok(());
+                }
+                if let Some(status) = tunnel
+                    .as_mut()
+                    .expect("tunnel was just started")
+                    .try_wait()
+                    .map_err(|error| CollectError::Transport(error.to_string()))?
+                {
+                    return Err(CollectError::Transport(format!(
+                        "SSH tunnel closed with {status}; check credentials and remote agent status"
+                    )));
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        tokio::time::timeout(self.timeout, ready)
+            .await
+            .map_err(|_| CollectError::Timeout)??;
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+#[async_trait]
+impl Collector for SshAgentCollector {
+    async fn collect(&self, host: &HostTarget) -> Result<RawHostSample, CollectError> {
+        self.ensure_tunnel().await?;
 
         let mut sample = AgentCollector::new(&self.socket_path, self.timeout)
             .collect(host)
             .await?;
         sample.host_id.clone_from(&host.id);
         Ok(sample)
+    }
+
+    async fn collect_storage(&self, host: &HostTarget) -> Result<StorageSnapshot, CollectError> {
+        self.ensure_tunnel().await?;
+        AgentCollector::new(&self.socket_path, self.timeout)
+            .collect_storage(host)
+            .await
     }
 }
 

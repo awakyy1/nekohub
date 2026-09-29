@@ -10,6 +10,28 @@ pub struct HostTarget {
     pub tags: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageEntry {
+    pub name: String,
+    pub path: String,
+    pub allocated_bytes: u64,
+    pub file_count: u64,
+    pub is_directory: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageSnapshot {
+    pub root: String,
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub scanned_bytes: u64,
+    pub file_count: u64,
+    pub unreadable_entries: u64,
+    pub truncated: bool,
+    pub elapsed_ms: u64,
+    pub entries: Vec<StorageEntry>,
+}
+
 impl HostTarget {
     pub fn from_alias(alias: impl Into<String>) -> Self {
         let alias = alias.into();

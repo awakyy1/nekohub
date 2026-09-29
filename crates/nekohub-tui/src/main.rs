@@ -16,7 +16,7 @@ use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use nekohub_agent::{AgentCollector, SshAgentCollector};
-use nekohub_core::{Collector, HostSnapshot, HostTarget, Inventory, RateTracker};
+use nekohub_core::{Collector, HostSnapshot, HostTarget, Inventory, RateTracker, StorageSnapshot};
 use ssh_terminal::{
     SshTerminalSession, TerminalEvent, embedded_size, encode_key, is_terminal_close_key,
 };
@@ -100,6 +100,14 @@ enum CollectionEvent {
     },
     AgentUpdateComplete,
     AgentUpdateError {
+        message: String,
+    },
+    StorageComplete {
+        host_id: String,
+        snapshot: StorageSnapshot,
+    },
+    StorageError {
+        host_id: String,
         message: String,
     },
 }
@@ -282,6 +290,9 @@ async fn run_event_loop(
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut workers = tokio::task::JoinSet::new();
     let mut ssh_session: Option<SshTerminalSession> = None;
+    let mut storage_source = initial.as_ref().and_then(|(targets, collector)| {
+        (targets.len() == 1).then(|| (targets[0].clone(), Arc::clone(collector)))
+    });
 
     if let Some((targets, collector)) = initial {
         for target in targets {
@@ -348,6 +359,7 @@ async fn run_event_loop(
                         app.start_monitoring(target.clone());
                         save_preferences(app).await;
                         app.view = View::RemoteInstallProgress;
+                        storage_source = Some((target.clone(), Arc::clone(&collector)));
                         spawn_worker(
                             &mut workers, target, collector, refresh_every,
                             &event_tx, &refresh_tx, &shutdown_rx,
@@ -369,6 +381,12 @@ async fn run_event_loop(
                     let _ = refresh_tx.send(());
                 }
                 CollectionEvent::AgentUpdateError { message } => app.fail_agent_update(message),
+                CollectionEvent::StorageComplete { host_id, snapshot } => {
+                    app.complete_storage_scan(&host_id, snapshot);
+                }
+                CollectionEvent::StorageError { host_id, message } => {
+                    app.fail_storage_scan(&host_id, message);
+                }
             },
             Some(event) = terminal_event_rx.recv() => match event {
                 TerminalEvent::Output { generation, bytes } => {
@@ -531,6 +549,8 @@ async fn run_event_loop(
                                         let target = local_target_named(&app.local_name);
                                         app.start_monitoring(target.clone());
                                         save_preferences(app).await;
+                                        storage_source =
+                                            Some((target.clone(), Arc::clone(collector)));
                                         spawn_worker(
                                             &mut workers, target, Arc::clone(collector), refresh_every,
                                             &event_tx, &refresh_tx, &shutdown_rx,
@@ -579,6 +599,8 @@ async fn run_event_loop(
                                         let target = local_target_named(&app.local_name);
                                         app.start_monitoring(target.clone());
                                         save_preferences(app).await;
+                                        storage_source =
+                                            Some((target.clone(), Arc::clone(collector)));
                                         spawn_worker(
                                             &mut workers, target, Arc::clone(collector), refresh_every,
                                             &event_tx, &refresh_tx, &shutdown_rx,
@@ -611,6 +633,8 @@ async fn run_event_loop(
                                     let target = local_target_named(&app.local_name);
                                     app.start_monitoring(target.clone());
                                     save_preferences(app).await;
+                                    storage_source =
+                                        Some((target.clone(), Arc::clone(collector)));
                                     spawn_worker(
                                         &mut workers, target, Arc::clone(collector), refresh_every,
                                         &event_tx, &refresh_tx, &shutdown_rx,
@@ -696,6 +720,8 @@ async fn run_event_loop(
                                     );
                                     app.start_monitoring(target.clone());
                                     save_preferences(app).await;
+                                    storage_source =
+                                        Some((target.clone(), Arc::clone(&collector)));
                                     spawn_worker(
                                         &mut workers, target, collector, refresh_every,
                                         &event_tx, &refresh_tx, &shutdown_rx,
@@ -865,15 +891,51 @@ async fn run_event_loop(
                             _ => {}
                         },
                         View::Overview => match key.code {
-                            KeyCode::Down | KeyCode::Char('j') => app.next_monitor_section(),
-                            KeyCode::Up | KeyCode::Char('k') => app.previous_monitor_section(),
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                app.next_monitor_section();
+                                maybe_spawn_storage_scan(
+                                    app,
+                                    &storage_source,
+                                    &mut workers,
+                                    &event_tx,
+                                    false,
+                                );
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                app.previous_monitor_section();
+                                maybe_spawn_storage_scan(
+                                    app,
+                                    &storage_source,
+                                    &mut workers,
+                                    &event_tx,
+                                    false,
+                                );
+                            }
                             KeyCode::Char('n') => app.next(),
                             KeyCode::Char('p') => app.previous(),
                             KeyCode::Enter if app.monitor_selected == 0 => app.open_detail(),
+                            KeyCode::Enter if app.monitor_selected == 3 => {
+                                maybe_spawn_storage_scan(
+                                    app,
+                                    &storage_source,
+                                    &mut workers,
+                                    &event_tx,
+                                    false,
+                                );
+                            }
                             KeyCode::Enter if app.monitor_selected == 7 => {
                                 app.begin_terminal_password();
                             }
                             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.open_home(),
+                            KeyCode::Char('r') if app.monitor_selected == 3 => {
+                                maybe_spawn_storage_scan(
+                                    app,
+                                    &storage_source,
+                                    &mut workers,
+                                    &event_tx,
+                                    true,
+                                );
+                            }
                             KeyCode::Char('r') => { let _ = refresh_tx.send(()); },
                             KeyCode::Char('"') => {
                                 app.register_agent_update_quote();
@@ -957,6 +1019,38 @@ async fn run_event_loop(
     workers.abort_all();
     while workers.join_next().await.is_some() {}
     result
+}
+
+fn maybe_spawn_storage_scan(
+    app: &mut App,
+    source: &Option<(HostTarget, Arc<dyn Collector>)>,
+    workers: &mut tokio::task::JoinSet<()>,
+    event_tx: &mpsc::Sender<CollectionEvent>,
+    force: bool,
+) {
+    if app.monitor_selected != 3 {
+        return;
+    }
+    let Some((target, collector)) = source else {
+        return;
+    };
+    if !app.begin_storage_scan(&target.id, force) {
+        return;
+    }
+    let target = target.clone();
+    let collector = Arc::clone(collector);
+    let event_tx = event_tx.clone();
+    workers.spawn(async move {
+        let host_id = target.id.clone();
+        let event = match collector.collect_storage(&target).await {
+            Ok(snapshot) => CollectionEvent::StorageComplete { host_id, snapshot },
+            Err(error) => CollectionEvent::StorageError {
+                host_id,
+                message: error.to_string(),
+            },
+        };
+        let _ = event_tx.send(event).await;
+    });
 }
 
 async fn save_preferences(app: &mut App) {

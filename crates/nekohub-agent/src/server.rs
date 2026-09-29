@@ -18,6 +18,7 @@ use crate::{
     linux::NativeLinuxCollector,
     prometheus,
     protocol::{AgentRequest, AgentResponse, PROTOCOL_VERSION},
+    storage,
 };
 
 #[derive(Debug, Clone)]
@@ -197,6 +198,31 @@ async fn handle_client(
                 },
             )
             .await
+        }
+        AgentRequest::Storage => {
+            let (total, used) = state
+                .read()
+                .await
+                .latest_snapshot
+                .as_ref()
+                .map_or((0, 0), |snapshot| {
+                    (snapshot.root_disk.total, snapshot.root_disk.used)
+                });
+            let result = tokio::task::spawn_blocking(move || {
+                storage::scan_path(std::path::Path::new("/"), total, used)
+            })
+            .await;
+            let response = match result {
+                Ok(snapshot) => AgentResponse::Storage {
+                    protocol: PROTOCOL_VERSION,
+                    snapshot: Box::new(snapshot),
+                },
+                Err(error) => AgentResponse::Error {
+                    protocol: PROTOCOL_VERSION,
+                    message: format!("storage scan failed: {error}"),
+                },
+            };
+            write_response(&mut writer, &response).await
         }
         AgentRequest::Stream => loop {
             match samples.recv().await {

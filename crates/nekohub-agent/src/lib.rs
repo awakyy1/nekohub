@@ -9,6 +9,8 @@ mod linux;
 mod prometheus;
 #[cfg(target_os = "linux")]
 mod server;
+#[cfg(target_os = "linux")]
+mod storage;
 
 pub use client::{AgentCollector, SshAgentCollector};
 pub use protocol::{AgentRequest, AgentResponse, PROTOCOL_VERSION};
