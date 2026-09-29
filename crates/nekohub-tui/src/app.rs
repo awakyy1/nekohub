@@ -91,6 +91,7 @@ impl HostState {
 }
 
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub local_name: String,
     pub local_alias: Option<String>,

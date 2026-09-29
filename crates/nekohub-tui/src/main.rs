@@ -895,7 +895,7 @@ async fn run_event_loop(
                                 app.next_monitor_section();
                                 maybe_spawn_storage_scan(
                                     app,
-                                    &storage_source,
+                                    storage_source.as_ref(),
                                     &mut workers,
                                     &event_tx,
                                     false,
@@ -905,7 +905,7 @@ async fn run_event_loop(
                                 app.previous_monitor_section();
                                 maybe_spawn_storage_scan(
                                     app,
-                                    &storage_source,
+                                    storage_source.as_ref(),
                                     &mut workers,
                                     &event_tx,
                                     false,
@@ -917,7 +917,7 @@ async fn run_event_loop(
                             KeyCode::Enter if app.monitor_selected == 3 => {
                                 maybe_spawn_storage_scan(
                                     app,
-                                    &storage_source,
+                                    storage_source.as_ref(),
                                     &mut workers,
                                     &event_tx,
                                     false,
@@ -930,7 +930,7 @@ async fn run_event_loop(
                             KeyCode::Char('r') if app.monitor_selected == 3 => {
                                 maybe_spawn_storage_scan(
                                     app,
-                                    &storage_source,
+                                    storage_source.as_ref(),
                                     &mut workers,
                                     &event_tx,
                                     true,
@@ -1023,7 +1023,7 @@ async fn run_event_loop(
 
 fn maybe_spawn_storage_scan(
     app: &mut App,
-    source: &Option<(HostTarget, Arc<dyn Collector>)>,
+    source: Option<&(HostTarget, Arc<dyn Collector>)>,
     workers: &mut tokio::task::JoinSet<()>,
     event_tx: &mpsc::Sender<CollectionEvent>,
     force: bool,
