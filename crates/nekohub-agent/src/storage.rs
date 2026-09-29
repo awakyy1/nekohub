@@ -51,7 +51,7 @@ pub(crate) fn scan_path(root: &Path, total_bytes: u64, used_bytes: u64) -> Stora
         }
         Err(_) => state.unreadable += 1,
     }
-    entries.sort_by(|left, right| right.allocated_bytes.cmp(&left.allocated_bytes));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.allocated_bytes));
     let scanned_bytes = entries.iter().map(|entry| entry.allocated_bytes).sum();
 
     StorageSnapshot {
@@ -86,12 +86,9 @@ fn measure(path: &Path, metadata: &fs::Metadata, root_device: u64, state: &mut S
     }
 
     let mut bytes = metadata.blocks().saturating_mul(512);
-    let children = match fs::read_dir(path) {
-        Ok(children) => children,
-        Err(_) => {
-            state.unreadable += 1;
-            return bytes;
-        }
+    let Ok(children) = fs::read_dir(path) else {
+        state.unreadable += 1;
+        return bytes;
     };
     for child in children {
         if state.truncated {
