@@ -48,6 +48,7 @@ impl NativeLinuxCollector {
 
         Ok(RawHostSample {
             host_id: host_id.to_owned(),
+            agent_version: env!("CARGO_PKG_VERSION").into(),
             collected_at: SystemTime::now(),
             latency: started.elapsed(),
             hostname: read(self.procfs.join("sys/kernel/hostname"))?

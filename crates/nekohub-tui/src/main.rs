@@ -94,6 +94,10 @@ enum CollectionEvent {
     RemoteInstallError {
         message: String,
     },
+    AgentUpdateComplete,
+    AgentUpdateError {
+        message: String,
+    },
 }
 
 #[tokio::main]
@@ -353,6 +357,11 @@ async fn run_event_loop(
                     }
                 }
                 CollectionEvent::RemoteInstallError { message } => app.fail_remote_install(message),
+                CollectionEvent::AgentUpdateComplete => {
+                    app.complete_agent_update();
+                    let _ = refresh_tx.send(());
+                }
+                CollectionEvent::AgentUpdateError { message } => app.fail_agent_update(message),
             },
             Some(event) = terminal_event_rx.recv() => match event {
                 TerminalEvent::Output { generation, bytes } => {
@@ -371,7 +380,19 @@ async fn run_event_loop(
                     }
                 }
             },
-            Some(input) = events.next() => match input? {
+            Some(input) = events.next() => {
+                let input = input?;
+                let input = if let Event::Mouse(mouse) = input {
+                    let (width, height) = crossterm::terminal::size()?;
+                    let area = ratatui::layout::Rect::new(0, 0, width, height);
+                    let Some(key) = ui::mouse_key(app, area, mouse) else {
+                        continue;
+                    };
+                    Event::Key(key)
+                } else {
+                    input
+                };
+                match input {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     if app.view == View::Terminal {
                         if is_terminal_close_key(key) {
@@ -389,7 +410,7 @@ async fn run_event_loop(
                         continue;
                     }
                     if matches!(key.code, KeyCode::Char('q'))
-                        && !matches!(app.view, View::CreateGroup | View::GroupAssign | View::MachineAlias | View::RemoteInstall | View::RemoteConnect | View::RemoteUninstallConfirm | View::ThemeImport | View::CredentialKeyEdit | View::TerminalPassword | View::TerminalSavePassword)
+                        && !matches!(app.view, View::CreateGroup | View::GroupAssign | View::MachineAlias | View::RemoteInstall | View::RemoteConnect | View::RemoteUninstallConfirm | View::ThemeImport | View::CredentialKeyEdit | View::AgentUpdateAuth | View::AgentUpdateProgress | View::TerminalPassword | View::TerminalSavePassword)
                         || matches!(key.code, KeyCode::Char('c')) && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         break Ok(());
@@ -695,6 +716,37 @@ async fn run_event_loop(
                             }
                             _ => {}
                         },
+                        View::AgentUpdateAuth => match key.code {
+                            KeyCode::Esc => app.cancel_agent_update(),
+                            KeyCode::Backspace => app.pop_remote_install_character(),
+                            KeyCode::Enter => {
+                                let target = app.remote_install_draft.clone();
+                                let password = app.take_remote_password();
+                                app.start_agent_update_progress();
+                                workers.spawn(update_remote_agent(
+                                    target,
+                                    password,
+                                    event_tx.clone(),
+                                ));
+                            }
+                            KeyCode::Char(character)
+                                if !key.modifiers.intersects(
+                                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                                ) =>
+                            {
+                                app.push_remote_install_character(character);
+                            }
+                            _ => {}
+                        },
+                        View::AgentUpdateProgress => match key.code {
+                            KeyCode::Enter | KeyCode::Esc
+                                if app.remote_install_complete
+                                    || app.remote_install_error.is_some() =>
+                            {
+                                app.close_agent_update_progress();
+                            }
+                            _ => {}
+                        },
                         View::Settings => match key.code {
                             KeyCode::Down | KeyCode::Char('j') => app.next_setting(),
                             KeyCode::Up | KeyCode::Char('k') => app.previous_setting(),
@@ -809,6 +861,9 @@ async fn run_event_loop(
                             }
                             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => app.open_home(),
                             KeyCode::Char('r') => { let _ = refresh_tx.send(()); },
+                            KeyCode::Char('"') => {
+                                app.register_agent_update_quote();
+                            }
                             _ => {}
                         },
                         View::Detail => match key.code {
@@ -878,7 +933,8 @@ async fn run_event_loop(
                         }
                     }
                 }
-                _ => {}
+                    _ => {}
+                }
             },
         }
     };
@@ -1052,6 +1108,54 @@ echo 'nekoHub agent was uninstalled.'"#;
     let event = match result {
         Ok(()) => CollectionEvent::RemoteUninstallComplete { target },
         Err(message) => CollectionEvent::RemoteInstallError { message },
+    };
+    let _ = event_tx.send(event).await;
+}
+
+async fn update_remote_agent(
+    target: String,
+    password: Option<String>,
+    event_tx: mpsc::Sender<CollectionEvent>,
+) {
+    const REMOTE_UPDATE: &str = r#"set -eu
+progress() { printf 'NEKOHUB_PROGRESS:%s:%s\n' "$1" "$2"; }
+run_root() {
+  if [ "$(id -u)" -eq 0 ]; then "$@";
+  elif [ "${NEKOHUB_SUDO_STDIN:-0}" = 1 ]; then sudo -S -p '' "$@";
+  elif command -v sudo >/dev/null 2>&1; then sudo -n "$@";
+  else echo 'root access or sudo is required' >&2; return 1; fi
+}
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo 'agent updates currently support Debian and Ubuntu' >&2; exit 1
+fi
+progress 12 'Connected to remote machine'
+installer=$(mktemp)
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL https://awakyy1.github.io/nekohub/install.sh -o "$installer"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$installer" https://awakyy1.github.io/nekohub/install.sh
+else
+  echo 'curl or wget is required to update the repository' >&2; exit 1
+fi
+progress 30 'Refreshing signed nekoHub repository'
+run_root sh "$installer"
+rm -f "$installer"
+progress 55 'Installing the latest agent'
+run_root apt-get update
+run_root apt-get install -y nekohub-agent
+if getent group docker >/dev/null 2>&1; then
+  run_root usermod -aG docker nekohub-agent
+fi
+progress 82 'Restarting metrics service'
+run_root systemctl restart nekohub-agent.service
+run_root systemctl is-active --quiet nekohub-agent.service
+progress 96 'Waiting for the new metrics stream'
+test -S /run/nekohub/agent.sock
+echo 'nekoHub agent update complete.'"#;
+    let result = run_remote_command(&target, REMOTE_UPDATE, password.as_deref(), &event_tx).await;
+    let event = match result {
+        Ok(()) => CollectionEvent::AgentUpdateComplete,
+        Err(message) => CollectionEvent::AgentUpdateError { message },
     };
     let _ = event_tx.send(event).await;
 }

@@ -41,6 +41,7 @@ impl Collector for DemoCollector {
 
         Ok(RawHostSample {
             host_id: host.id.clone(),
+            agent_version: env!("CARGO_PKG_VERSION").into(),
             collected_at: SystemTime::now(),
             latency: Duration::from_millis(12 + seed),
             hostname: host.alias.clone(),

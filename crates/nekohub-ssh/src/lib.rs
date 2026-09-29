@@ -187,6 +187,7 @@ pub fn parse_probe(
 
     Ok(RawHostSample {
         host_id: host_id.to_owned(),
+        agent_version: String::new(),
         collected_at: std::time::SystemTime::now(),
         latency,
         hostname: text("hostname")?,

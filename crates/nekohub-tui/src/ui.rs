@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     buffer::Buffer,
@@ -35,6 +36,274 @@ const INK: Color = Color::Rgb(11, 16, 14);
 const SURFACE: Color = Color::Rgb(16, 23, 20);
 const LINE: Color = Color::Rgb(43, 56, 51);
 const TEXT: Color = Color::Rgb(215, 224, 219);
+
+pub fn mouse_key(app: &mut App, area: Rect, event: MouseEvent) -> Option<KeyEvent> {
+    match event.kind {
+        MouseEventKind::ScrollUp => return Some(mouse_key_event(KeyCode::Up)),
+        MouseEventKind::ScrollDown => return Some(mouse_key_event(KeyCode::Down)),
+        MouseEventKind::Down(MouseButton::Right) => return Some(mouse_key_event(KeyCode::Esc)),
+        MouseEventKind::Down(MouseButton::Left) => {}
+        _ => return None,
+    }
+    let x = event.column;
+    let y = event.row;
+    if let Some(index) = chrome_nav_hit(area, x, y) {
+        return Some(mouse_key_event(KeyCode::Char(char::from(
+            b'1' + index as u8,
+        ))));
+    }
+    match app.view {
+        View::Welcome => welcome_mouse_key(app, area, x, y),
+        View::AgentConfirm => Some(confirmation_mouse_key(app, area, x)),
+        View::Home => home_mouse_key(app, area, x, y),
+        View::GroupDetail => group_detail_mouse_key(app, area, y),
+        View::RemotePicker => remote_picker_mouse_key(app, area, x, y),
+        View::Settings => settings_mouse_key(app, area, x, y),
+        View::Overview => monitoring_mouse_key(app, area, x, y),
+        View::TerminalSavePassword => {
+            app.terminal_save_selected = usize::from(x >= area.x + area.width / 2);
+            Some(mouse_key_event(KeyCode::Enter))
+        }
+        View::GroupAssign => group_assignment_mouse_key(app, area, y),
+        View::RemoteInstall => remote_install_mouse_key(app, area, y),
+        View::AgentSetup | View::AgentUpdateProgress => {
+            modal_footer_key(area, y, area.height.min(24))
+        }
+        View::CreateGroup | View::RemoteConnect | View::AgentUpdateAuth => {
+            modal_footer_key(area, y, area.height.min(17))
+        }
+        View::MachineAlias => modal_footer_key(area, y, area.height.min(13)),
+        View::RemoteUninstallConfirm => modal_footer_key(area, y, area.height.min(14)),
+        View::RemoteInstallProgress => modal_footer_key(area, y, area.height.min(26)),
+        View::ThemeImport => modal_footer_key(area, y, area.height.min(20)),
+        View::CredentialKeyEdit => modal_footer_key(area, y, area.height.min(15)),
+        View::TerminalPassword => modal_footer_key(area, y, 9_u16.min(area.height)),
+        View::Detail | View::Terminal => None,
+    }
+}
+
+fn mouse_key_event(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn chrome_content(area: Rect) -> Rect {
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(10),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(11),
+    )
+}
+
+fn chrome_nav_hit(area: Rect, x: u16, y: u16) -> Option<usize> {
+    if y < area.y.saturating_add(2) || y >= area.y.saturating_add(5) {
+        return None;
+    }
+    let start = area.x.saturating_add(44);
+    let width = area.right().saturating_sub(1).saturating_sub(start);
+    if x < start || width < 3 {
+        return None;
+    }
+    Some(usize::from((x - start) * 3 / width).min(2))
+}
+
+fn welcome_mouse_key(app: &mut App, area: Rect, x: u16, y: u16) -> Option<KeyEvent> {
+    let inner = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let content_height = if app.welcome_notice.is_some() { 14 } else { 12 };
+    let top = inner.y + inner.height.saturating_sub(content_height) / 2;
+    let button_x = inner.x + inner.width.saturating_sub(42) / 2;
+    if x < button_x || x >= button_x.saturating_add(42.min(inner.width)) {
+        return None;
+    }
+    app.welcome_selected = if (top + 3..top + 6).contains(&y) {
+        0
+    } else if (top + 7..top + 10).contains(&y) {
+        1
+    } else {
+        return None;
+    };
+    Some(mouse_key_event(KeyCode::Enter))
+}
+
+fn confirmation_mouse_key(app: &mut App, area: Rect, x: u16) -> KeyEvent {
+    app.agent_confirm_selected = usize::from(x >= area.x + area.width / 2);
+    mouse_key_event(KeyCode::Enter)
+}
+
+fn home_mouse_key(app: &mut App, area: Rect, x: u16, y: u16) -> Option<KeyEvent> {
+    let content = chrome_content(area);
+    let shelf_y = content.y + 3;
+    if (shelf_y..shelf_y + 6).contains(&y) {
+        let machine_order = app.home_machine_order();
+        let visible = usize::from(content.width / 24)
+            .max(1)
+            .min(machine_order.len());
+        let first = app
+            .home_machine_selected
+            .saturating_sub(visible / 2)
+            .min(machine_order.len().saturating_sub(visible));
+        let card = usize::from(x.saturating_sub(content.x) / 23);
+        if card < visible {
+            app.home_focus = HomeFocus::Machines;
+            app.home_machine_selected = first + card;
+            return Some(mouse_key_event(KeyCode::Enter));
+        }
+    }
+    let groups_y = content.y + 12;
+    if y >= groups_y {
+        const CARD_WIDTH: u16 = 30;
+        const CARD_HEIGHT: u16 = 8;
+        const GAP_X: u16 = 2;
+        const GAP_Y: u16 = 1;
+        let columns = usize::from(((content.width + GAP_X) / (CARD_WIDTH + GAP_X)).max(1));
+        let visible_rows = usize::from(
+            ((content.bottom().saturating_sub(groups_y) + GAP_Y) / (CARD_HEIGHT + GAP_Y)).max(1),
+        );
+        let capacity = columns * visible_rows;
+        let first = app.home_selected / capacity * capacity;
+        let column = usize::from(x.saturating_sub(content.x) / (CARD_WIDTH + GAP_X));
+        let row = usize::from(y.saturating_sub(groups_y) / (CARD_HEIGHT + GAP_Y));
+        let index = first + row * columns + column;
+        if column < columns && index < app.home_item_count() {
+            app.home_focus = HomeFocus::Groups;
+            app.home_selected = index;
+            return Some(mouse_key_event(KeyCode::Enter));
+        }
+    }
+    None
+}
+
+fn group_detail_mouse_key(app: &mut App, area: Rect, y: u16) -> Option<KeyEvent> {
+    let group = app.machine_groups.get(app.active_group)?;
+    let modal_height = area.height.min(22);
+    let modal_top = area.y + area.height.saturating_sub(modal_height) / 2;
+    let capacity = usize::from(modal_height.saturating_sub(8)).max(1);
+    let selected = app
+        .group_machine_selected
+        .min(group.host_ids.len().saturating_sub(1));
+    let first = selected
+        .saturating_sub(capacity / 2)
+        .min(group.host_ids.len().saturating_sub(capacity));
+    let index = first + usize::from(y.saturating_sub(modal_top.saturating_add(4)));
+    if index < group.host_ids.len() {
+        app.group_machine_selected = index;
+        Some(mouse_key_event(KeyCode::Enter))
+    } else {
+        None
+    }
+}
+
+fn group_assignment_mouse_key(app: &mut App, area: Rect, y: u16) -> Option<KeyEvent> {
+    let height = (app.machine_groups.len() as u16 + 8)
+        .min(area.height)
+        .max(12);
+    let top = area.y + area.height.saturating_sub(height) / 2;
+    let index = usize::from(y.saturating_sub(top.saturating_add(3)));
+    if index < app.machine_groups.len() {
+        app.group_assign_selected = index;
+        Some(mouse_key_event(KeyCode::Enter))
+    } else {
+        None
+    }
+}
+
+fn remote_install_mouse_key(app: &mut App, area: Rect, y: u16) -> Option<KeyEvent> {
+    let height = area.height.min(22);
+    let top = area.y + area.height.saturating_sub(height) / 2;
+    if (top + 6..top + 9).contains(&y) {
+        app.remote_install_field = 0;
+        None
+    } else if (top + 9..top + 12).contains(&y) {
+        app.remote_install_field = 1;
+        None
+    } else {
+        modal_footer_key(area, y, height)
+    }
+}
+
+fn modal_footer_key(area: Rect, y: u16, height: u16) -> Option<KeyEvent> {
+    let top = area.y + area.height.saturating_sub(height) / 2;
+    (y >= top.saturating_add(height.saturating_sub(2))).then(|| mouse_key_event(KeyCode::Enter))
+}
+
+fn remote_picker_mouse_key(app: &mut App, area: Rect, x: u16, y: u16) -> Option<KeyEvent> {
+    let content = chrome_content(area);
+    let panel_y = content.y + 6;
+    let install_y = content.bottom().saturating_sub(4);
+    if y < install_y.saturating_add(2) && y >= install_y {
+        app.remote_selected = app.remote_item_count() - 1;
+        return Some(mouse_key_event(KeyCode::Enter));
+    }
+    if y >= install_y.saturating_add(2) {
+        let relative_x = x.saturating_sub(content.x);
+        let action = if relative_x < content.width / 3 {
+            'u'
+        } else if relative_x < content.width / 3 * 2 {
+            'g'
+        } else {
+            'a'
+        };
+        return Some(mouse_key_event(KeyCode::Char(action)));
+    }
+    let index = usize::from(y.saturating_sub(panel_y.saturating_add(3)));
+    if index <= app.remote_hosts.len() {
+        app.remote_selected = index;
+        return Some(mouse_key_event(KeyCode::Enter));
+    }
+    None
+}
+
+fn settings_mouse_key(app: &mut App, area: Rect, x: u16, y: u16) -> Option<KeyEvent> {
+    let content = chrome_content(area);
+    if x < content.x.saturating_add(30) {
+        let index = usize::from(y.saturating_sub(content.y) / 3);
+        if index < 6 {
+            app.settings_selected = index;
+            app.settings_focus = SettingsFocus::Sidebar;
+            return Some(mouse_key_event(KeyCode::Enter));
+        }
+        return None;
+    }
+    app.settings_focus = SettingsFocus::Content;
+    if app.settings_selected == 2 && y >= content.bottom().saturating_sub(3) {
+        return Some(mouse_key_event(KeyCode::Char(
+            if x < content.x + content.width / 3 * 2 {
+                'p'
+            } else {
+                'x'
+            },
+        )));
+    }
+    app.settings_item_selected = match app.settings_selected {
+        0 => usize::from(y >= content.y + content.height / 2),
+        1 if y >= content.y + 4 && y < content.y + 12 => usize::from(
+            (x.saturating_sub(content.x + 32)) * 4 / content.width.saturating_sub(32).max(1),
+        )
+        .min(3),
+        1 => 4,
+        2 => usize::from(y.saturating_sub(content.y + 5)),
+        _ => 0,
+    };
+    Some(mouse_key_event(KeyCode::Enter))
+}
+
+fn monitoring_mouse_key(app: &mut App, area: Rect, x: u16, y: u16) -> Option<KeyEvent> {
+    let content = chrome_content(area);
+    let body_y = content.y.saturating_add(3);
+    if x < content.x.saturating_add(29) && y >= body_y.saturating_add(5) {
+        let index = usize::from((y - body_y - 5) / 3);
+        if index < 8 {
+            app.monitor_selected = index;
+            return Some(mouse_key_event(KeyCode::Enter));
+        }
+    }
+    None
+}
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
@@ -134,6 +403,8 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
             return;
         }
         View::Overview
+        | View::AgentUpdateAuth
+        | View::AgentUpdateProgress
         | View::Detail
         | View::TerminalPassword
         | View::TerminalSavePassword
@@ -155,7 +426,12 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
         .split(content);
     render_monitoring_bar(frame, sections[0], app);
     match app.view {
-        View::Overview | View::TerminalPassword | View::TerminalSavePassword | View::Terminal => {
+        View::Overview
+        | View::AgentUpdateAuth
+        | View::AgentUpdateProgress
+        | View::TerminalPassword
+        | View::TerminalSavePassword
+        | View::Terminal => {
             render_overview(frame, sections[1], app);
         }
         View::Detail => render_detail(frame, sections[1], app.selected()),
@@ -180,6 +456,10 @@ fn render_content(frame: &mut Frame<'_>, app: &App) {
     }
     if app.view == View::TerminalSavePassword {
         render_terminal_password_save(frame, frame.area(), app);
+    } else if app.view == View::AgentUpdateAuth {
+        render_agent_update_auth(frame, frame.area(), app);
+    } else if app.view == View::AgentUpdateProgress {
+        render_agent_update_progress(frame, frame.area(), app);
     }
 }
 
@@ -903,7 +1183,7 @@ fn render_create_group(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Length(3),
             Constraint::Min(2),
         ])
@@ -2530,6 +2810,158 @@ fn render_remote_install_progress(frame: &mut Frame<'_>, area: Rect, app: &App) 
     }
 }
 
+fn render_agent_update_auth(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(72);
+    let height = area.height.min(17);
+    let modal = centered_rect(area, width, height);
+    frame.render_widget(Clear, modal);
+    let masked = "•".repeat(app.remote_password_draft.chars().count());
+    let cursor = if app.animation_tick % 10 < 5 {
+        "_"
+    } else {
+        " "
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("AGENT UPDATE", Style::default().fg(AMBER).bold()),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Machine  ", Style::default().fg(DIM)),
+                Span::styled(&app.remote_install_draft, Style::default().fg(TEXT).bold()),
+            ]),
+            Line::from(""),
+            Line::styled(
+                "Enter the sudo password, or leave empty when sudo does not require one.",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::from(""),
+            Line::styled("SSH / sudo password", Style::default().fg(DIM)),
+            Line::styled(format!("  {masked}{cursor}"), Style::default().fg(TEXT)),
+        ])
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .title(" UPDATE AUTHENTICATION ")
+                .title_bottom(Line::from(" Enter update  ·  Esc cancel ").centered())
+                .borders(Borders::ALL)
+                .border_type(BorderType::Thick)
+                .border_style(Style::default().fg(AMBER))
+                .style(canvas_style(app)),
+        ),
+        modal,
+    );
+}
+
+fn render_agent_update_progress(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let width = area.width.min(82);
+    let height = area.height.min(24);
+    let modal = centered_rect(area, width, height);
+    frame.render_widget(Clear, modal);
+    let failed = app.remote_install_error.is_some();
+    let complete = app.remote_install_complete;
+    let color = if failed {
+        RED
+    } else if complete {
+        GREEN
+    } else {
+        AMBER
+    };
+    let activity = ["◐", "◓", "◑", "◒"][(app.animation_tick as usize / 3) % 4];
+    let block = Block::default()
+        .title(" AGENT UPDATE ")
+        .title_bottom(
+            Line::from(if failed || complete {
+                " Enter close "
+            } else {
+                " Updating securely over SSH "
+            })
+            .centered(),
+        )
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(color))
+        .style(canvas_style(app));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(3),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(
+                if complete {
+                    "AGENT IS UP TO DATE"
+                } else if failed {
+                    "UPDATE STOPPED"
+                } else {
+                    "UPDATING REMOTE AGENT"
+                },
+                Style::default().fg(color).bold(),
+            ),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(format!("{activity} "), Style::default().fg(color)),
+                Span::styled(&app.remote_install_message, Style::default().fg(TEXT)),
+            ]),
+        ])
+        .alignment(Alignment::Center),
+        rows[0],
+    );
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(Style::default().fg(color).bg(SURFACE).bold())
+            .ratio(f64::from(app.remote_install_progress) / 100.0)
+            .label(format!("{}%", app.remote_install_progress)),
+        Rect::new(
+            rows[1].x + 3,
+            rows[1].y + 1,
+            rows[1].width.saturating_sub(6),
+            1,
+        ),
+    );
+    let logs = app
+        .remote_install_logs
+        .iter()
+        .rev()
+        .take(rows[2].height.saturating_sub(2) as usize)
+        .rev()
+        .map(|line| Line::styled(format!("  {line}"), Style::default().fg(Color::Gray)))
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(logs).block(
+            Block::default()
+                .title(" update output ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(LINE)),
+        ),
+        rows[2],
+    );
+    if let Some(error) = app.remote_install_error.as_deref() {
+        frame.render_widget(
+            Paragraph::new(error)
+                .style(Style::default().fg(RED))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true }),
+            rows[3],
+        );
+    }
+}
+
+fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
 fn render_neko_delivery(frame: &mut Frame<'_>, area: Rect, app: &App, accent: Color) {
     if area.width < 46 || area.height < 6 {
         frame.render_widget(
@@ -2740,19 +3172,36 @@ fn render_neko_dashboard(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Style::default().fg(state_color).bold(),
                 ),
             ]),
-            Line::from(vec![
-                Span::styled(identity, Style::default().fg(DIM)),
-                Span::styled(
-                    snapshot.map_or_else(String::new, |sample| {
-                        format!(
-                            "    uptime {}    latency {}ms",
-                            human_duration(Duration::from_secs(sample.uptime_secs)),
-                            sample.latency_ms
-                        )
-                    }),
-                    Style::default().fg(Color::Gray),
-                ),
-            ]),
+            Line::styled(
+                snapshot.map_or_else(String::new, |sample| {
+                    format!(
+                        "uptime {}    latency {}ms    agent v{}",
+                        human_duration(Duration::from_secs(sample.uptime_secs)),
+                        sample.latency_ms,
+                        if sample.agent_version.is_empty() {
+                            "legacy"
+                        } else {
+                            sample.agent_version.as_str()
+                        }
+                    )
+                }),
+                Style::default().fg(Color::Gray),
+            ),
+            if app.selected_agent_needs_update() {
+                Line::styled(
+                    if app.agent_update_is_armed() {
+                        "UPDATE ARMED · press \" once more to start"
+                    } else {
+                        "AGENT UPDATE AVAILABLE · press \" twice to update"
+                    },
+                    Style::default().fg(ORANGE).bold(),
+                )
+            } else {
+                Line::from(vec![
+                    Span::styled(identity, Style::default().fg(DIM)),
+                    Span::styled("    agent is up to date", Style::default().fg(GREEN)),
+                ])
+            },
         ])
         .block(
             Block::default()
@@ -4482,6 +4931,7 @@ fn human_duration(duration: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyEventKind, MouseEvent};
 
     #[test]
     fn formats_sizes() {
@@ -4490,6 +4940,39 @@ mod tests {
         assert_eq!(chart_ceiling(0), 1);
         assert_eq!(chart_ceiling(65), 128);
         assert_eq!(chart_ceiling(1024), 1024);
+    }
+
+    #[test]
+    fn mouse_clicks_select_navigation_and_monitor_sections() {
+        let area = Rect::new(0, 0, 106, 40);
+        let mut app = App::monitoring(vec![nekohub_core::HostTarget::from_alias("local")]);
+        let nav = mouse_key(
+            &mut app,
+            area,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 70,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            },
+        )
+        .unwrap();
+        assert_eq!(nav.code, KeyCode::Char('2'));
+        assert_eq!(nav.kind, KeyEventKind::Press);
+
+        let section = mouse_key(
+            &mut app,
+            area,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row: 21,
+                modifiers: KeyModifiers::NONE,
+            },
+        )
+        .unwrap();
+        assert_eq!(section.code, KeyCode::Enter);
+        assert_eq!(app.monitor_selected, 1);
     }
 
     #[test]
@@ -4578,6 +5061,7 @@ mod tests {
             app.start_monitoring(nekohub_core::HostTarget::from_alias("local"));
             app.apply_snapshot(nekohub_core::HostSnapshot {
                 host_id: "local".into(),
+                agent_version: "0.11.0".into(),
                 collected_at: std::time::SystemTime::now(),
                 latency_ms: 2,
                 hostname: "demo".into(),
@@ -4623,6 +5107,17 @@ mod tests {
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.monitor_selected = 5;
             terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.monitor_selected = 0;
+            assert!(!app.register_agent_update_quote());
+            assert!(app.register_agent_update_quote());
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.start_agent_update_progress();
+            app.update_remote_install(72, "Installing updated agent".into());
+            app.push_remote_install_log("Package downloaded".into());
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.complete_agent_update();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            app.close_agent_update_progress();
             app.monitor_selected = 7;
             terminal.draw(|frame| render(frame, &app)).unwrap();
             app.begin_terminal_password();

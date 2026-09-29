@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawHostSample {
     pub host_id: String,
+    #[serde(default)]
+    pub agent_version: String,
     pub collected_at: SystemTime,
     pub latency: Duration,
     pub hostname: String,
@@ -121,6 +123,7 @@ impl RateTracker {
 
         let snapshot = HostSnapshot {
             host_id: raw.host_id.clone(),
+            agent_version: raw.agent_version.clone(),
             collected_at: raw.collected_at,
             latency_ms: u64::try_from(raw.latency.as_millis()).unwrap_or(u64::MAX),
             hostname: raw.hostname.clone(),
@@ -155,6 +158,7 @@ mod tests {
     fn raw(at: u64, total: u64, idle: u64, rx: u64) -> RawHostSample {
         RawHostSample {
             host_id: "host".into(),
+            agent_version: "0.14.1".into(),
             collected_at: SystemTime::UNIX_EPOCH + Duration::from_secs(at),
             latency: Duration::from_millis(12),
             hostname: "host".into(),

@@ -95,7 +95,7 @@ it with `systemctl status nekohub-agent`.
 Alternatively, install downloaded builds directly:
 
 ```bash
-sudo apt install ./nekohub-agent_0.14.1_amd64.deb ./nekohub_0.14.1_amd64.deb
+sudo apt install ./nekohub-agent_0.15.0_amd64.deb ./nekohub_0.15.0_amd64.deb
 nekohub
 ```
 

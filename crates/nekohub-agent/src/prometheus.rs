@@ -115,6 +115,7 @@ mod tests {
     fn exposes_prometheus_metrics() {
         let snapshot = HostSnapshot {
             host_id: "local".into(),
+            agent_version: env!("CARGO_PKG_VERSION").into(),
             collected_at: SystemTime::UNIX_EPOCH,
             latency_ms: 1,
             hostname: "demo".into(),

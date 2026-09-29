@@ -9,6 +9,11 @@ if ! getent passwd nekohub-agent >/dev/null; then
         --home /nonexistent --shell /usr/sbin/nologin nekohub-agent
 fi
 
+# Docker exposes container metrics through a group-owned Unix socket.
+if getent group docker >/dev/null && ! id -nG nekohub-agent | grep -qw docker; then
+    adduser --quiet nekohub-agent docker
+fi
+
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     systemctl enable nekohub-agent.service

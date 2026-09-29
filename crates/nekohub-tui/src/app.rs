@@ -31,6 +31,8 @@ pub enum View {
     Settings,
     ThemeImport,
     CredentialKeyEdit,
+    AgentUpdateAuth,
+    AgentUpdateProgress,
     Overview,
     Detail,
     TerminalPassword,
@@ -107,6 +109,7 @@ pub struct App {
     pub credential_key_draft: String,
     pub credential_key_error: Option<String>,
     pub terminal_save_selected: usize,
+    pub agent_update_quote_tick: Option<u64>,
     pub monitor_selected: usize,
     pub terminal: TerminalPanel,
     pub navigation_motion: Option<NavigationMotion>,
@@ -171,6 +174,7 @@ impl App {
             credential_key_draft: String::new(),
             credential_key_error: None,
             terminal_save_selected: 1,
+            agent_update_quote_tick: None,
             monitor_selected: 0,
             terminal: TerminalPanel::default(),
             navigation_motion: None,
@@ -241,6 +245,7 @@ impl App {
             credential_key_draft: String::new(),
             credential_key_error: None,
             terminal_save_selected: 1,
+            agent_update_quote_tick: None,
             monitor_selected: 0,
             terminal: TerminalPanel::default(),
             navigation_motion: None,
@@ -970,6 +975,17 @@ impl App {
                 .saturating_add(step)
                 .min(self.remote_install_target_progress);
         }
+        if self.view == View::AgentUpdateProgress
+            && self.remote_install_error.is_none()
+            && self.remote_install_progress < self.remote_install_target_progress
+        {
+            let remaining = self.remote_install_target_progress - self.remote_install_progress;
+            let step = remaining.div_ceil(7).max(1);
+            self.remote_install_progress = self
+                .remote_install_progress
+                .saturating_add(step)
+                .min(self.remote_install_target_progress);
+        }
     }
 
     pub fn toggle_welcome_choice(&mut self) {
@@ -1243,6 +1259,90 @@ impl App {
         self.monitor_selected = self.monitor_selected.checked_sub(1).unwrap_or(7);
     }
 
+    pub fn selected_agent_needs_update(&self) -> bool {
+        self.selected()
+            .and_then(|host| host.snapshot.as_ref())
+            .is_some_and(|snapshot| {
+                snapshot.agent_version.is_empty()
+                    || version_is_older(&snapshot.agent_version, env!("CARGO_PKG_VERSION"))
+            })
+    }
+
+    pub fn register_agent_update_quote(&mut self) -> bool {
+        if !self.selected_agent_needs_update() {
+            self.agent_update_quote_tick = None;
+            return false;
+        }
+        let confirmed = self
+            .agent_update_quote_tick
+            .is_some_and(|tick| self.animation_tick.wrapping_sub(tick) <= 45);
+        if confirmed {
+            self.agent_update_quote_tick = None;
+            self.begin_agent_update();
+        } else {
+            self.agent_update_quote_tick = Some(self.animation_tick);
+        }
+        confirmed
+    }
+
+    pub fn agent_update_is_armed(&self) -> bool {
+        self.agent_update_quote_tick
+            .is_some_and(|tick| self.animation_tick.wrapping_sub(tick) <= 45)
+    }
+
+    fn begin_agent_update(&mut self) {
+        let Some(target) = self.selected().map(|host| host.target.alias.clone()) else {
+            return;
+        };
+        self.remote_install_draft.clone_from(&target);
+        self.remote_password_draft = self
+            .credentials
+            .get(&target)
+            .and_then(|credential| credential.password.clone())
+            .unwrap_or_default();
+        self.remote_install_field = 1;
+        self.remote_install_error = None;
+        self.view = View::AgentUpdateAuth;
+    }
+
+    pub fn cancel_agent_update(&mut self) {
+        self.remote_password_draft.clear();
+        self.remote_install_error = None;
+        self.view = View::Overview;
+    }
+
+    pub fn start_agent_update_progress(&mut self) {
+        self.remote_install_progress = 0;
+        self.remote_install_target_progress = 4;
+        self.remote_install_message = "Connecting to the machine".into();
+        self.remote_install_logs.clear();
+        self.remote_install_error = None;
+        self.remote_install_complete = false;
+        self.view = View::AgentUpdateProgress;
+    }
+
+    pub fn complete_agent_update(&mut self) {
+        self.remote_install_progress = 100;
+        self.remote_install_target_progress = 100;
+        self.remote_install_message = "Agent updated and restarted".into();
+        self.remote_install_complete = true;
+        self.remote_install_error = None;
+        self.view = View::AgentUpdateProgress;
+    }
+
+    pub fn fail_agent_update(&mut self, message: String) {
+        self.remote_install_error = Some(message);
+        self.remote_install_message = "Update stopped".into();
+        self.view = View::AgentUpdateProgress;
+    }
+
+    pub fn close_agent_update_progress(&mut self) {
+        self.remote_password_draft.clear();
+        self.remote_install_error = None;
+        self.remote_install_complete = false;
+        self.view = View::Overview;
+    }
+
     pub fn begin_terminal_password(&mut self) {
         let Some(target) = self.selected().map(|host| host.target.alias.clone()) else {
             return;
@@ -1315,6 +1415,8 @@ fn shell_navigation_index(view: View) -> Option<usize> {
         | View::RemoteConnect
         | View::RemoteUninstallConfirm
         | View::RemoteInstallProgress
+        | View::AgentUpdateAuth
+        | View::AgentUpdateProgress
         | View::Overview
         | View::Detail
         | View::TerminalPassword
@@ -1323,6 +1425,21 @@ fn shell_navigation_index(view: View) -> Option<usize> {
         View::Settings | View::ThemeImport | View::CredentialKeyEdit => Some(2),
         View::Welcome | View::AgentConfirm | View::AgentSetup => None,
     }
+}
+
+fn version_is_older(installed: &str, current: &str) -> bool {
+    fn parts(version: &str) -> [u64; 3] {
+        let mut values = version
+            .trim_start_matches('v')
+            .split('.')
+            .map(|part| part.parse::<u64>().unwrap_or_default());
+        [
+            values.next().unwrap_or_default(),
+            values.next().unwrap_or_default(),
+            values.next().unwrap_or_default(),
+        ]
+    }
+    parts(installed) < parts(current)
 }
 
 fn expand_home_path(value: &str) -> PathBuf {
@@ -1612,5 +1729,37 @@ mod tests {
         assert!(!app.should_confirm_terminal_password_save());
         let request = app.start_terminal(24, 80);
         assert_eq!(request.password.as_deref(), Some("saved-secret"));
+    }
+
+    #[test]
+    fn detects_old_agent_versions_and_requires_two_quotes() {
+        assert!(version_is_older("0.11.0", "0.14.1"));
+        assert!(!version_is_older("0.14.1", "0.14.1"));
+        assert!(!version_is_older("0.15.0", "0.14.1"));
+
+        let mut app = App::monitoring(vec![HostTarget::from_alias("edge-01")]);
+        app.apply_snapshot(HostSnapshot {
+            host_id: "edge-01".into(),
+            agent_version: "0.11.0".into(),
+            collected_at: std::time::SystemTime::now(),
+            latency_ms: 4,
+            hostname: "edge-01".into(),
+            os: "Linux".into(),
+            kernel: "6.x".into(),
+            uptime_secs: 10,
+            cpu_percent: Some(1.0),
+            memory: nekohub_core::Usage::default(),
+            root_disk: nekohub_core::Usage::default(),
+            load: [0.0; 3],
+            network: nekohub_core::Throughput::default(),
+            processes: Vec::new(),
+            containers: Vec::new(),
+        });
+
+        assert!(app.selected_agent_needs_update());
+        assert!(!app.register_agent_update_quote());
+        assert!(app.agent_update_is_armed());
+        assert!(app.register_agent_update_quote());
+        assert_eq!(app.view, View::AgentUpdateAuth);
     }
 }

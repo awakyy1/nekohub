@@ -71,6 +71,8 @@ pub struct ContainerSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostSnapshot {
     pub host_id: String,
+    #[serde(default)]
+    pub agent_version: String,
     pub collected_at: SystemTime,
     pub latency_ms: u64,
     pub hostname: String,
