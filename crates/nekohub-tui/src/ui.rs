@@ -308,7 +308,7 @@ fn monitoring_mouse_key(app: &mut App, area: Rect, x: u16, y: u16) -> Option<Key
         let index = usize::from((y - body_y - 5) / 3);
         if index < 8 {
             app.select_monitor_section(index);
-            return Some(mouse_key_event(KeyCode::Enter));
+            return matches!(index, 3 | 7).then(|| mouse_key_event(KeyCode::Enter));
         }
     }
     None
@@ -5365,10 +5365,22 @@ mod tests {
                 row: 21,
                 modifiers: KeyModifiers::NONE,
             },
-        )
-        .unwrap();
-        assert_eq!(section.code, KeyCode::Enter);
+        );
+        assert!(section.is_none());
         assert_eq!(app.monitor_selected, 1);
+
+        let overview = mouse_key(
+            &mut app,
+            area,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row: 19,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert!(overview.is_none());
+        assert_eq!(app.monitor_selected, 0);
     }
 
     #[test]
