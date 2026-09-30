@@ -1,13 +1,13 @@
 use nekohub_core::{HostSnapshot, RawHostSample, StorageSnapshot};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "request", rename_all = "snake_case")]
 pub enum AgentRequest {
     Snapshot,
-    Storage,
+    Storage { path: String },
     History { limit: Option<usize> },
     Stream,
 }

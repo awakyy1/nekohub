@@ -119,6 +119,8 @@ pub struct App {
     pub storage_error: Option<String>,
     pub storage_host_id: Option<String>,
     pub storage_hovered: Option<usize>,
+    pub storage_path: String,
+    pub storage_history: Vec<String>,
     pub terminal: TerminalPanel,
     pub navigation_motion: Option<NavigationMotion>,
     pub background_enabled: bool,
@@ -189,6 +191,8 @@ impl App {
             storage_error: None,
             storage_host_id: None,
             storage_hovered: None,
+            storage_path: "/".into(),
+            storage_history: Vec::new(),
             terminal: TerminalPanel::default(),
             navigation_motion: None,
             background_enabled: true,
@@ -265,6 +269,8 @@ impl App {
             storage_error: None,
             storage_host_id: None,
             storage_hovered: None,
+            storage_path: "/".into(),
+            storage_history: Vec::new(),
             terminal: TerminalPanel::default(),
             navigation_motion: None,
             background_enabled: true,
@@ -324,6 +330,8 @@ impl App {
         self.storage_error = None;
         self.storage_host_id = None;
         self.storage_hovered = None;
+        self.storage_path = "/".into();
+        self.storage_history.clear();
         self.by_id = self
             .hosts
             .iter()
@@ -1307,13 +1315,16 @@ impl App {
         }
     }
 
-    pub fn begin_storage_scan(&mut self, host_id: &str, force: bool) -> bool {
+    pub fn begin_storage_scan(&mut self, host_id: &str, path: &str, force: bool) -> bool {
         if self.storage_loading {
             return false;
         }
         if !force
             && self.storage_host_id.as_deref() == Some(host_id)
-            && self.storage_snapshot.is_some()
+            && self
+                .storage_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.root == path)
         {
             return false;
         }
@@ -1321,11 +1332,13 @@ impl App {
         self.storage_error = None;
         self.storage_hovered = None;
         self.storage_host_id = Some(host_id.to_owned());
+        self.storage_path = path.to_owned();
         true
     }
 
     pub fn complete_storage_scan(&mut self, host_id: &str, snapshot: StorageSnapshot) {
         if self.storage_host_id.as_deref() == Some(host_id) {
+            self.storage_path.clone_from(&snapshot.root);
             self.storage_snapshot = Some(snapshot);
             self.storage_loading = false;
             self.storage_error = None;
@@ -1337,6 +1350,39 @@ impl App {
             self.storage_loading = false;
             self.storage_error = Some(message);
         }
+    }
+
+    pub fn open_storage_entry(&mut self, index: usize) -> bool {
+        if self.storage_loading {
+            return false;
+        }
+        let Some(snapshot) = self.storage_snapshot.as_ref() else {
+            return false;
+        };
+        let Some(path) = snapshot
+            .entries
+            .get(index)
+            .filter(|entry| entry.is_directory)
+            .map(|entry| entry.path.clone())
+        else {
+            return false;
+        };
+        self.storage_history.push(snapshot.root.clone());
+        self.storage_path = path;
+        self.storage_hovered = None;
+        true
+    }
+
+    pub fn previous_storage_path(&mut self) -> bool {
+        if self.storage_loading {
+            return false;
+        }
+        let Some(path) = self.storage_history.pop() else {
+            return false;
+        };
+        self.storage_path = path;
+        self.storage_hovered = None;
+        true
     }
 
     pub fn selected_agent_needs_update(&self) -> bool {
@@ -1745,6 +1791,45 @@ mod tests {
         assert_eq!(app.monitor_selected, 7);
         app.next_monitor_section();
         assert_eq!(app.monitor_selected, 0);
+    }
+
+    #[test]
+    fn storage_directories_open_and_return_to_the_parent() {
+        let mut app = App::monitoring(vec![HostTarget::from_alias("local")]);
+        app.storage_snapshot = Some(StorageSnapshot {
+            root: "/".into(),
+            total_bytes: 100,
+            used_bytes: 50,
+            scanned_bytes: 40,
+            file_count: 2,
+            unreadable_entries: 0,
+            truncated: false,
+            elapsed_ms: 1,
+            entries: vec![
+                nekohub_core::StorageEntry {
+                    name: "var".into(),
+                    path: "/var".into(),
+                    allocated_bytes: 30,
+                    file_count: 1,
+                    is_directory: true,
+                },
+                nekohub_core::StorageEntry {
+                    name: "swapfile".into(),
+                    path: "/swapfile".into(),
+                    allocated_bytes: 10,
+                    file_count: 1,
+                    is_directory: false,
+                },
+            ],
+        });
+
+        assert!(!app.open_storage_entry(1));
+        assert!(app.open_storage_entry(0));
+        assert_eq!(app.storage_path, "/var");
+        assert_eq!(app.storage_history, ["/"]);
+        assert!(app.previous_storage_path());
+        assert_eq!(app.storage_path, "/");
+        assert!(app.storage_history.is_empty());
     }
 
     #[test]

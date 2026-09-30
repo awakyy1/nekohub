@@ -923,6 +923,17 @@ async fn run_event_loop(
                                     false,
                                 );
                             }
+                            KeyCode::Backspace if app.monitor_selected == 3 => {
+                                if app.previous_storage_path() {
+                                    maybe_spawn_storage_scan(
+                                        app,
+                                        storage_source.as_ref(),
+                                        &mut workers,
+                                        &event_tx,
+                                        false,
+                                    );
+                                }
+                            }
                             KeyCode::Enter if app.monitor_selected == 7 => {
                                 app.begin_terminal_password();
                             }
@@ -1034,7 +1045,8 @@ fn maybe_spawn_storage_scan(
     let Some((target, collector)) = source else {
         return;
     };
-    if !app.begin_storage_scan(&target.id, force) {
+    let path = app.storage_path.clone();
+    if !app.begin_storage_scan(&target.id, &path, force) {
         return;
     }
     let target = target.clone();
@@ -1042,7 +1054,7 @@ fn maybe_spawn_storage_scan(
     let event_tx = event_tx.clone();
     workers.spawn(async move {
         let host_id = target.id.clone();
-        let event = match collector.collect_storage(&target).await {
+        let event = match collector.collect_storage(&target, &path).await {
             Ok(snapshot) => CollectionEvent::StorageComplete { host_id, snapshot },
             Err(error) => CollectionEvent::StorageError {
                 host_id,

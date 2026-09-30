@@ -21,7 +21,11 @@ pub enum CollectError {
 pub trait Collector: Send + Sync {
     async fn collect(&self, host: &HostTarget) -> Result<RawHostSample, CollectError>;
 
-    async fn collect_storage(&self, _host: &HostTarget) -> Result<StorageSnapshot, CollectError> {
+    async fn collect_storage(
+        &self,
+        _host: &HostTarget,
+        _path: &str,
+    ) -> Result<StorageSnapshot, CollectError> {
         Err(CollectError::Remote(
             "storage inventory is not supported by this collector".into(),
         ))

@@ -63,29 +63,53 @@ impl Collector for DemoCollector {
         })
     }
 
-    async fn collect_storage(&self, _host: &HostTarget) -> Result<StorageSnapshot, CollectError> {
+    async fn collect_storage(
+        &self,
+        _host: &HostTarget,
+        path: &str,
+    ) -> Result<StorageSnapshot, CollectError> {
         tokio::time::sleep(Duration::from_millis(420)).await;
         let gib = 1024 * 1024 * 1024;
-        let entries = [
-            ("home", 42, 126_482, true),
-            ("usr", 26, 82_104, true),
-            ("var", 18, 48_291, true),
-            ("opt", 8, 11_804, true),
-            ("swapfile", 6, 1, false),
-            ("boot", 2, 743, true),
-            ("etc", 1, 4_921, true),
-        ]
-        .into_iter()
-        .map(|(name, size, file_count, is_directory)| StorageEntry {
-            name: name.into(),
-            path: format!("/{name}"),
-            allocated_bytes: size * gib,
-            file_count,
-            is_directory,
-        })
-        .collect::<Vec<_>>();
+        let items: &[(&str, u64, u64, bool)] = match path {
+            "/var" => &[
+                ("lib", 9, 28_491, true),
+                ("log", 5, 8_217, true),
+                ("cache", 3, 10_991, true),
+                ("tmp", 1, 592, true),
+            ],
+            "/var/lib" => &[
+                ("docker", 5, 14_890, true),
+                ("postgresql", 2, 8_410, true),
+                ("apt", 1, 3_180, true),
+                ("dpkg", 1, 2_011, true),
+            ],
+            _ => &[
+                ("home", 42, 126_482, true),
+                ("usr", 26, 82_104, true),
+                ("var", 18, 48_291, true),
+                ("opt", 8, 11_804, true),
+                ("swapfile", 6, 1, false),
+                ("boot", 2, 743, true),
+                ("etc", 1, 4_921, true),
+            ],
+        };
+        let entries = items
+            .iter()
+            .copied()
+            .map(|(name, size, file_count, is_directory)| StorageEntry {
+                name: name.into(),
+                path: if path == "/" {
+                    format!("/{name}")
+                } else {
+                    format!("{}/{name}", path.trim_end_matches('/'))
+                },
+                allocated_bytes: size * gib,
+                file_count,
+                is_directory,
+            })
+            .collect::<Vec<_>>();
         Ok(StorageSnapshot {
-            root: "/".into(),
+            root: path.into(),
             total_bytes: 240 * gib,
             used_bytes: 109 * gib,
             scanned_bytes: entries.iter().map(|entry| entry.allocated_bytes).sum(),

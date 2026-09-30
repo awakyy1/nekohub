@@ -47,6 +47,13 @@ pub fn mouse_key(app: &mut App, area: Rect, event: MouseEvent) -> Option<KeyEven
         app.storage_hovered = hovered;
         return None;
     }
+    if event.kind == MouseEventKind::Down(MouseButton::Right)
+        && app.view == View::Overview
+        && app.monitor_selected == 3
+        && app.previous_storage_path()
+    {
+        return Some(mouse_key_event(KeyCode::Enter));
+    }
     match event.kind {
         MouseEventKind::ScrollUp => return Some(mouse_key_event(KeyCode::Up)),
         MouseEventKind::ScrollDown => return Some(mouse_key_event(KeyCode::Down)),
@@ -60,6 +67,13 @@ pub fn mouse_key(app: &mut App, area: Rect, event: MouseEvent) -> Option<KeyEven
         return Some(mouse_key_event(KeyCode::Char(char::from(
             b'1' + index as u8,
         ))));
+    }
+    if app.view == View::Overview && app.monitor_selected == 3 {
+        let entry = storage_entry_at(area, app, x, y);
+        app.storage_hovered = entry;
+        if entry.is_some_and(|index| app.open_storage_entry(index)) {
+            return Some(mouse_key_event(KeyCode::Enter));
+        }
     }
     match app.view {
         View::Welcome => welcome_mouse_key(app, area, x, y),
@@ -3559,13 +3573,15 @@ fn render_storage_view(frame: &mut Frame<'_>, area: Rect, app: &App, host: &Host
             snapshot.hostname.as_str()
         });
     let summary = app.storage_snapshot.as_ref().map_or_else(
-        || "Waiting for storage inventory".into(),
+        || format!("Scanning {}", app.storage_path),
         |storage| {
             format!(
-                "{} used of {}  ·  {} files  ·  scanned in {}ms",
+                "{} in {}  ·  {} files  ·  disk {} / {}  ·  {}ms",
+                bytes(storage.scanned_bytes),
+                storage.root,
+                storage.file_count,
                 bytes(storage.used_bytes),
                 bytes(storage.total_bytes),
-                storage.file_count,
                 storage.elapsed_ms
             )
         },
@@ -3604,7 +3620,12 @@ fn render_storage_view(frame: &mut Frame<'_>, area: Rect, app: &App, host: &Host
         header_rows[1],
     );
 
-    if app.storage_loading && app.storage_snapshot.is_none() {
+    if app.storage_loading
+        && app
+            .storage_snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.root != app.storage_path)
+    {
         let dots = ".".repeat(usize::try_from(app.animation_tick / 5 % 4).unwrap_or_default());
         frame.render_widget(
             Paragraph::new(vec![
@@ -3616,7 +3637,7 @@ fn render_storage_view(frame: &mut Frame<'_>, area: Rect, app: &App, host: &Host
                 Line::styled(format!(" > ^ <{dots}"), Style::default().fg(DIM)),
                 Line::from(""),
                 Line::styled(
-                    "Read-only scan · symlinks and mounted filesystems are skipped",
+                    format!("Opening {} · read-only scan", app.storage_path),
                     Style::default().fg(DIM),
                 ),
             ])
@@ -3669,7 +3690,7 @@ fn render_storage_view(frame: &mut Frame<'_>, area: Rect, app: &App, host: &Host
             if app.storage_loading {
                 " rescanning… "
             } else {
-                " hover a block · r rescan "
+                " hover inspect · click open · Backspace/right-click up · r rescan "
             },
             Style::default().fg(if app.storage_loading { ORANGE } else { DIM }),
         ))
@@ -3768,6 +3789,13 @@ fn render_storage_details(
             ]
         },
     );
+    if entry.is_some_and(|entry| entry.is_directory) {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Click to open this directory",
+            Style::default().fg(ORANGE).bold(),
+        ));
+    }
     if storage.unreadable_entries > 0 || storage.truncated {
         lines.push(Line::from(""));
         lines.push(Line::styled(

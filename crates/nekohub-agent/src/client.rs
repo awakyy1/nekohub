@@ -112,10 +112,14 @@ impl Collector for AgentCollector {
         }
     }
 
-    async fn collect_storage(&self, _host: &HostTarget) -> Result<StorageSnapshot, CollectError> {
+    async fn collect_storage(
+        &self,
+        _host: &HostTarget,
+        path: &str,
+    ) -> Result<StorageSnapshot, CollectError> {
         match self
             .request(
-                AgentRequest::Storage,
+                AgentRequest::Storage { path: path.into() },
                 self.timeout.max(Duration::from_secs(120)),
             )
             .await?
@@ -220,10 +224,14 @@ impl Collector for SshAgentCollector {
         Ok(sample)
     }
 
-    async fn collect_storage(&self, host: &HostTarget) -> Result<StorageSnapshot, CollectError> {
+    async fn collect_storage(
+        &self,
+        host: &HostTarget,
+        path: &str,
+    ) -> Result<StorageSnapshot, CollectError> {
         self.ensure_tunnel().await?;
         AgentCollector::new(&self.socket_path, self.timeout)
-            .collect_storage(host)
+            .collect_storage(host, path)
             .await
     }
 }
