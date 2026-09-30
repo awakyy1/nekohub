@@ -208,35 +208,7 @@ async fn handle_client(
                 .map_or((0, 0), |snapshot| {
                     (snapshot.root_disk.total, snapshot.root_disk.used)
                 });
-            let result = tokio::task::spawn_blocking(move || {
-                let requested = std::path::PathBuf::from(path);
-                if !requested.is_absolute() {
-                    return Err("storage path must be absolute".to_owned());
-                }
-                let metadata = std::fs::symlink_metadata(&requested)
-                    .map_err(|error| format!("cannot inspect path: {error}"))?;
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err("storage path must be a real directory".to_owned());
-                }
-                let canonical = std::fs::canonicalize(&requested)
-                    .map_err(|error| format!("cannot resolve path: {error}"))?;
-                Ok(storage::scan_path(&canonical, total, used))
-            })
-            .await;
-            let response = match result {
-                Ok(Ok(snapshot)) => AgentResponse::Storage {
-                    protocol: PROTOCOL_VERSION,
-                    snapshot: Box::new(snapshot),
-                },
-                Ok(Err(message)) => AgentResponse::Error {
-                    protocol: PROTOCOL_VERSION,
-                    message,
-                },
-                Err(error) => AgentResponse::Error {
-                    protocol: PROTOCOL_VERSION,
-                    message: format!("storage scan failed: {error}"),
-                },
-            };
+            let response = storage_response(path, total, used).await;
             write_response(&mut writer, &response).await
         }
         AgentRequest::Stream => loop {
@@ -255,6 +227,38 @@ async fn handle_client(
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => return Ok(()),
             }
+        },
+    }
+}
+
+async fn storage_response(path: String, total: u64, used: u64) -> AgentResponse {
+    let result = tokio::task::spawn_blocking(move || {
+        let requested = PathBuf::from(path);
+        if !requested.is_absolute() {
+            return Err("storage path must be absolute".to_owned());
+        }
+        let metadata = std::fs::symlink_metadata(&requested)
+            .map_err(|error| format!("cannot inspect path: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("storage path must be a real directory".to_owned());
+        }
+        let canonical = std::fs::canonicalize(&requested)
+            .map_err(|error| format!("cannot resolve path: {error}"))?;
+        Ok(storage::scan_path(&canonical, total, used))
+    })
+    .await;
+    match result {
+        Ok(Ok(snapshot)) => AgentResponse::Storage {
+            protocol: PROTOCOL_VERSION,
+            snapshot: Box::new(snapshot),
+        },
+        Ok(Err(message)) => AgentResponse::Error {
+            protocol: PROTOCOL_VERSION,
+            message,
+        },
+        Err(error) => AgentResponse::Error {
+            protocol: PROTOCOL_VERSION,
+            message: format!("storage scan failed: {error}"),
         },
     }
 }
