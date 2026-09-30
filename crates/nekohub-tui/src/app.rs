@@ -1332,7 +1332,7 @@ impl App {
         self.storage_error = None;
         self.storage_hovered = None;
         self.storage_host_id = Some(host_id.to_owned());
-        self.storage_path = path.to_owned();
+        path.clone_into(&mut self.storage_path);
         true
     }
 
