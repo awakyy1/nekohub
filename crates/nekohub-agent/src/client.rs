@@ -49,6 +49,14 @@ impl SshAgentCollector {
     }
 }
 
+#[cfg(unix)]
+fn tunnel_error(error: &CollectError) -> bool {
+    matches!(
+        error,
+        CollectError::Timeout | CollectError::Transport(_) | CollectError::Protocol(_)
+    )
+}
+
 impl AgentCollector {
     pub fn new(socket_path: impl Into<PathBuf>, timeout: Duration) -> Self {
         Self {
@@ -135,6 +143,14 @@ impl Collector for AgentCollector {
 
 #[cfg(unix)]
 impl SshAgentCollector {
+    async fn reset_tunnel(&self) {
+        let mut tunnel = self.tunnel.lock().await;
+        if let Some(mut child) = tunnel.take() {
+            let _ = child.start_kill();
+        }
+        let _ = std::fs::remove_file(&self.socket_path);
+    }
+
     async fn ensure_tunnel(&self) -> Result<(), CollectError> {
         use std::process::Stdio;
 
@@ -167,7 +183,11 @@ impl SshAgentCollector {
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-o",
-                "ServerAliveInterval=15",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=2",
+                "-o",
+                "TCPKeepAlive=yes",
                 "-o",
                 "StrictHostKeyChecking=accept-new",
                 "-L",
@@ -204,10 +224,35 @@ impl SshAgentCollector {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         };
-        tokio::time::timeout(self.timeout, ready)
+        let result = match tokio::time::timeout(self.timeout, ready).await {
+            Ok(result) => result,
+            Err(_) => Err(CollectError::Timeout),
+        };
+        if result.is_err() {
+            if let Some(mut child) = tunnel.take() {
+                let _ = child.start_kill();
+            }
+            let _ = std::fs::remove_file(&self.socket_path);
+        }
+        result
+    }
+
+    async fn collect_sample(&self, host: &HostTarget) -> Result<RawHostSample, CollectError> {
+        self.ensure_tunnel().await?;
+        AgentCollector::new(&self.socket_path, self.timeout)
+            .collect(host)
             .await
-            .map_err(|_| CollectError::Timeout)??;
-        Ok(())
+    }
+
+    async fn collect_storage_snapshot(
+        &self,
+        host: &HostTarget,
+        path: &str,
+    ) -> Result<StorageSnapshot, CollectError> {
+        self.ensure_tunnel().await?;
+        AgentCollector::new(&self.socket_path, self.timeout)
+            .collect_storage(host, path)
+            .await
     }
 }
 
@@ -215,11 +260,14 @@ impl SshAgentCollector {
 #[async_trait]
 impl Collector for SshAgentCollector {
     async fn collect(&self, host: &HostTarget) -> Result<RawHostSample, CollectError> {
-        self.ensure_tunnel().await?;
-
-        let mut sample = AgentCollector::new(&self.socket_path, self.timeout)
-            .collect(host)
-            .await?;
+        let mut sample = match self.collect_sample(host).await {
+            Ok(sample) => sample,
+            Err(error) if tunnel_error(&error) => {
+                self.reset_tunnel().await;
+                self.collect_sample(host).await?
+            }
+            Err(error) => return Err(error),
+        };
         sample.host_id.clone_from(&host.id);
         Ok(sample)
     }
@@ -229,10 +277,14 @@ impl Collector for SshAgentCollector {
         host: &HostTarget,
         path: &str,
     ) -> Result<StorageSnapshot, CollectError> {
-        self.ensure_tunnel().await?;
-        AgentCollector::new(&self.socket_path, self.timeout)
-            .collect_storage(host, path)
-            .await
+        match self.collect_storage_snapshot(host, path).await {
+            Ok(snapshot) => Ok(snapshot),
+            Err(error) if tunnel_error(&error) => {
+                self.reset_tunnel().await;
+                self.collect_storage_snapshot(host, path).await
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 

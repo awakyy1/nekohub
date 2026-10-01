@@ -13,6 +13,8 @@ use crate::{
     ssh_terminal::{TerminalPanel, TerminalRequest},
 };
 
+pub const CPU_HISTORY_MAX: u64 = 10_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Welcome,
@@ -67,6 +69,7 @@ pub struct HostState {
     pub snapshot: Option<HostSnapshot>,
     pub agent_version_hint: Option<String>,
     pub last_error: Option<String>,
+    pub consecutive_errors: u8,
     pub cpu_history: VecDeque<u64>,
     pub network_rx_history: VecDeque<u64>,
     pub network_tx_history: VecDeque<u64>,
@@ -79,6 +82,7 @@ impl HostState {
             snapshot: None,
             agent_version_hint: None,
             last_error: None,
+            consecutive_errors: 0,
             cpu_history: VecDeque::with_capacity(120),
             network_rx_history: VecDeque::with_capacity(120),
             network_tx_history: VecDeque::with_capacity(120),
@@ -356,7 +360,7 @@ impl App {
                 host.cpu_history.pop_front();
             }
             host.cpu_history
-                .push_back(cpu.clamp(0.0, 100.0).round() as u64);
+                .push_back((cpu.clamp(0.0, 100.0) * 100.0).round() as u64);
         }
         if host.network_rx_history.len() == 120 {
             host.network_rx_history.pop_front();
@@ -368,6 +372,7 @@ impl App {
             .push_back(snapshot.network.write_per_sec.max(0.0).round() as u64);
         host.snapshot = Some(snapshot);
         host.last_error = None;
+        host.consecutive_errors = 0;
     }
 
     pub fn apply_agent_version(&mut self, host_id: &str, version: String) {
@@ -381,7 +386,11 @@ impl App {
 
     pub fn apply_error(&mut self, host_id: &str, error: String) {
         if let Some(index) = self.by_id.get(host_id).copied() {
-            self.hosts[index].last_error = Some(error);
+            let host = &mut self.hosts[index];
+            host.consecutive_errors = host.consecutive_errors.saturating_add(1);
+            if host.snapshot.is_none() || host.consecutive_errors >= 2 {
+                host.last_error = Some(error);
+            }
         }
     }
 
@@ -1609,6 +1618,26 @@ fn non_empty_machine_name(name: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn test_snapshot(host_id: &str, cpu_percent: Option<f64>) -> HostSnapshot {
+        HostSnapshot {
+            host_id: host_id.into(),
+            agent_version: "0.17.0".into(),
+            collected_at: std::time::SystemTime::now(),
+            latency_ms: 4,
+            hostname: host_id.into(),
+            os: "Linux".into(),
+            kernel: "6.x".into(),
+            uptime_secs: 10,
+            cpu_percent,
+            memory: nekohub_core::Usage::default(),
+            root_disk: nekohub_core::Usage::default(),
+            load: [0.0; 3],
+            network: nekohub_core::Throughput::default(),
+            processes: Vec::new(),
+            containers: Vec::new(),
+        }
+    }
+
     #[test]
     fn selection_wraps() {
         let mut app = App::monitoring(vec![
@@ -1791,6 +1820,28 @@ mod tests {
         assert_eq!(app.monitor_selected, 7);
         app.next_monitor_section();
         assert_eq!(app.monitor_selected, 0);
+    }
+
+    #[test]
+    fn low_cpu_values_keep_two_decimal_places_in_history() {
+        let mut app = App::monitoring(vec![HostTarget::from_alias("edge")]);
+        app.apply_snapshot(test_snapshot("edge", Some(0.25)));
+
+        assert_eq!(app.hosts[0].cpu_history.back(), Some(&25));
+    }
+
+    #[test]
+    fn one_transient_error_does_not_mark_a_warm_host_offline() {
+        let mut app = App::monitoring(vec![HostTarget::from_alias("edge")]);
+        app.apply_snapshot(test_snapshot("edge", Some(2.0)));
+
+        app.apply_error("edge", "temporary timeout".into());
+        assert!(app.hosts[0].last_error.is_none());
+        assert!(app.hosts[0].is_online());
+
+        app.apply_error("edge", "second timeout".into());
+        assert_eq!(app.hosts[0].last_error.as_deref(), Some("second timeout"));
+        assert!(!app.hosts[0].is_online());
     }
 
     #[test]

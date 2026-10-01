@@ -20,7 +20,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{App, HomeFocus, HostState, SettingsFocus, View},
+    app::{App, CPU_HISTORY_MAX, HomeFocus, HostState, SettingsFocus, View},
     machines::INSTALLED_TAG,
     preferences::{CustomTheme, FontProfile, Theme},
     ssh_terminal::TerminalPhase,
@@ -4060,8 +4060,8 @@ fn render_cpu_history(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
         (span, "0%".to_owned()),
     ];
     render_y_axis(frame, columns[0], &cpu_labels, AMBER);
-    let data: Vec<_> = host.cpu_history.iter().copied().collect();
-    if data.is_empty() {
+    let samples: Vec<_> = host.cpu_history.iter().copied().collect();
+    if samples.is_empty() {
         frame.render_widget(
             Paragraph::new("Waiting for the first CPU samples")
                 .style(Style::default().fg(DIM))
@@ -4069,10 +4069,11 @@ fn render_cpu_history(frame: &mut Frame<'_>, area: Rect, host: &HostState) {
             columns[1],
         );
     } else {
+        let data = visible_sparkline_samples(&samples, CPU_HISTORY_MAX, columns[1].height);
         frame.render_widget(
             Sparkline::default()
                 .data(&data)
-                .max(100)
+                .max(CPU_HISTORY_MAX)
                 .style(Style::default().fg(AMBER)),
             columns[1],
         );
@@ -4131,20 +4132,30 @@ fn render_network_lane(
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(11), Constraint::Min(1)])
         .split(area);
-    let maximum = chart_ceiling(data.iter().copied().max().unwrap_or_default());
+    let ticks = u64::from(columns[1].height).saturating_mul(8).max(1);
+    let maximum = chart_ceiling(data.iter().copied().max().unwrap_or_default()).max(ticks);
     let span = columns[0].height.saturating_sub(1);
     let labels = [
         (0, format!("{direction}{}", bytes(maximum))),
         (span, "0".to_owned()),
     ];
     render_y_axis(frame, columns[0], &labels, color);
+    let visible = visible_sparkline_samples(data, maximum, columns[1].height);
     frame.render_widget(
         Sparkline::default()
-            .data(data)
+            .data(&visible)
             .max(maximum)
             .style(Style::default().fg(color)),
         columns[1],
     );
+}
+
+fn visible_sparkline_samples(data: &[u64], maximum: u64, height: u16) -> Vec<u64> {
+    let ticks = u64::from(height).saturating_mul(8).max(1);
+    let visible_floor = maximum.div_ceil(ticks).max(1);
+    data.iter()
+        .map(|value| (*value).max(visible_floor))
+        .collect()
 }
 
 fn render_y_axis(frame: &mut Frame<'_>, area: Rect, labels: &[(u16, String)], color: Color) {
@@ -5308,7 +5319,8 @@ fn sparkline_text(values: &std::collections::VecDeque<u64>, width: usize) -> Str
         .into_iter()
         .rev()
     {
-        let level = (((*value).min(100) as f64 / 100.0).sqrt() * 8.0).round() as usize;
+        let level = (((*value).min(CPU_HISTORY_MAX) as f64 / CPU_HISTORY_MAX as f64).sqrt() * 8.0)
+            .round() as usize;
         output.push(BLOCKS[level.max(1)]);
     }
     output
@@ -5364,6 +5376,7 @@ mod tests {
         assert_eq!(chart_ceiling(0), 1);
         assert_eq!(chart_ceiling(65), 128);
         assert_eq!(chart_ceiling(1024), 1024);
+        assert_eq!(visible_sparkline_samples(&[0, 1, 50], 100, 1), [13, 13, 50]);
     }
 
     #[test]
